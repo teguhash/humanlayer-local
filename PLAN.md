@@ -138,10 +138,10 @@ Note: worktrees are created on request ("Create worktree" on the task), not on t
 
 ### M5: Codex adapter (weeks 10–11)
 
-- [ ] Codex implementation of the `Agent` trait (`codex exec --json`, resume)
-- [ ] Install skills into the Codex skills folder
-- [ ] Per-task choice of agent; default set per project
-- [ ] Map Codex events into the same transcript UI
+- [x] Codex implementation of the `Agent` trait (`codex exec --json`, resume) (`--sandbox workspace-write`, no per-call approvals; docs/m5-findings.md)
+- [x] Install skills into the Codex skills folder — linked per session into `.agents/skills/humanlayer-rpi` instead, so nothing is written to `~/.codex`
+- [x] Per-task choice of agent; default set per project
+- [x] Map Codex events into the same transcript UI (`file_change`, `mcp_tool_call`, `web_search`, `todo_list` added)
 
 ### M6: Linear (weeks 12–13)
 

@@ -3,7 +3,20 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Agent = "claude" | "codex";
 
-export type Project = { id: number; name: string; repo_path: string; created_at: string };
+export type Project = {
+  id: number;
+  name: string;
+  repo_path: string;
+  created_at: string;
+  /** Agent for stage sessions when a task doesn't pick one. */
+  default_agent: Agent;
+};
+
+export const AGENT_LABEL: Record<Agent, string> = { claude: "Claude", codex: "Codex" };
+
+/** How a skill is invoked (mirrors rpi::skill_prompt). */
+export const skillCommand = (agent: Agent, skill: string) =>
+  agent === "codex" ? "$" + skill : "/rpi:" + skill;
 
 export type Task = {
   id: number;
@@ -25,6 +38,8 @@ export type Task = {
   worktree_status: WorktreeStatus | null;
   worktree_log: string | null;
   archived_at: string | null;
+  /** Overrides the project's default_agent; null = use the default. */
+  agent: Agent | null;
 };
 
 export const STAGES = ["backlog", "research", "plan", "implement", "review", "done"] as const;
@@ -146,6 +161,9 @@ export const api = {
     invoke<Task>("update_task", { id, title, description }),
   moveTask: (taskId: number, stage: Stage, index: number) =>
     invoke<MoveResult>("move_task", { taskId, stage, index }),
+  setTaskAgent: (taskId: number, agent: Agent | null) => invoke<Task>("set_task_agent", { taskId, agent }),
+  setProjectAgent: (projectId: number, agent: Agent) =>
+    invoke<Project>("set_project_agent", { projectId, agent }),
   startStageSession: (taskId: number) => invoke<MoveResult>("start_stage_session", { taskId }),
   listArtifacts: (taskId: number) => invoke<Artifact[]>("list_artifacts", { taskId }),
   readArtifact: (taskId: number, path: string) => invoke<string>("read_artifact", { taskId, path }),

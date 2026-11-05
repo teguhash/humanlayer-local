@@ -15,6 +15,8 @@ import {
 import {
   api,
   STAGE_SKILL,
+  AGENT_LABEL,
+  skillCommand,
   type Agent,
   type MoveResult,
   type Project,
@@ -344,6 +346,8 @@ export default function App() {
             onOpenTask={(id) => setSel({ kind: "task", id })}
             onMove={moveTask}
             onDelete={() => removeProject(project(sel.id)!)}
+            onChanged={(p) => setProjects((ps) => ps.map((x) => (x.id === p.id ? p : x)))}
+            onError={fail}
           />
         )}
 
@@ -452,6 +456,8 @@ function ProjectView(props: {
   onOpenTask: (id: number) => void;
   onMove: (t: Task, stage: Stage, index: number) => void;
   onDelete: () => Promise<void>;
+  onChanged: (p: Project) => void;
+  onError: (e: unknown) => void;
 }) {
   const [title, setTitle] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -465,11 +471,23 @@ function ProjectView(props: {
         title={p.name}
         sub={p.repo_path}
         actions={
-          <ConfirmDelete
-            what={`project “${p.name}”`}
-            detail="This deletes its tasks and sessions from HumanLayer Local. The repository on disk is not touched."
-            onConfirm={props.onDelete}
-          />
+          <>
+            <AgentSelect
+              label="Default agent"
+              title="Runs stage sessions for tasks that don't pick an agent"
+              value={p.default_agent}
+              options={[
+                ["claude", "Claude"],
+                ["codex", "Codex"],
+              ]}
+              onChange={(v) => api.setProjectAgent(p.id, v as Agent).then(props.onChanged).catch(props.onError)}
+            />
+            <ConfirmDelete
+              what={`project “${p.name}”`}
+              detail="This deletes its tasks and sessions from HumanLayer Local. The repository on disk is not touched."
+              onConfirm={props.onDelete}
+            />
+          </>
         }
       />
       <form
@@ -489,7 +507,16 @@ function ProjectView(props: {
         </Button>
       </form>
       {err && <p className="text-destructive">{err}</p>}
-      <Board tasks={active} onMove={props.onMove} onOpen={props.onOpenTask} label={wtLabel} />
+      <Board
+        tasks={active}
+        onMove={props.onMove}
+        onOpen={props.onOpenTask}
+        label={(t) =>
+          [t.agent && t.agent !== p.default_agent ? AGENT_LABEL[t.agent] : "", wtLabel(t)]
+            .filter(Boolean)
+            .join(" · ")
+        }
+      />
       {archived.length > 0 && (
         <>
           <button
@@ -536,6 +563,8 @@ function TaskView(props: {
   const [tab, setTab] = useState<"sessions" | "docs" | "changes">("sessions");
   const [editing, setEditing] = useState(false);
   const skill = STAGE_SKILL[t.stage];
+  const defaultAgent = props.project?.default_agent ?? "claude";
+  const agent = t.agent ?? defaultAgent;
   const [err, setErr] = useState<string | null>(null);
   const hasWt = !!t.worktree_path && t.worktree_status !== "creating";
   // Refresh the diff whenever a session of this task changes status.
@@ -568,10 +597,21 @@ function TaskView(props: {
             </>
           ) : (
             <>
+              <AgentSelect
+                label="Agent"
+                title="Runs this task's stage sessions"
+                value={t.agent ?? ""}
+                options={[
+                  ["", `Project default (${AGENT_LABEL[defaultAgent]})`],
+                  ["claude", "Claude"],
+                  ["codex", "Codex"],
+                ]}
+                onChange={(v) => api.setTaskAgent(t.id, (v || null) as Agent | null).catch(props.onError)}
+              />
               {skill && (
                 <Button
                   size="sm"
-                  title={`Start a session with /rpi:${skill}`}
+                  title={`Start a ${AGENT_LABEL[agent]} session with ${skillCommand(agent, skill)}`}
                   onClick={() => api.startStageSession(t.id).then(props.onStageResult).catch(props.onError)}
                 >
                   <Play /> {skill}
@@ -648,6 +688,31 @@ function TaskView(props: {
 
 function sessionLabel(s: Session): string {
   return `${s.agent_kind} #${s.id}${s.skill ? ` · ${s.skill}` : ""}`;
+}
+
+function AgentSelect(props: {
+  label: string;
+  title: string;
+  value: string;
+  options: [string, string][];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1 text-muted-foreground" title={props.title}>
+      {props.label}
+      <select
+        className="h-8 rounded-md border bg-background px-2 text-foreground"
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        {props.options.map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function EditTask(props: { task: Task; onDone: () => void }) {
