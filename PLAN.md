@@ -110,13 +110,13 @@ Answers the risky questions first.
 
 The hardest milestone.
 
-- [ ] `agents` crate: a `Agent` trait (start, send, interrupt, resume, stop) with a Claude implementation
-- [ ] Parse stream events: assistant text, tool use, tool result, usage, result
-- [ ] Store every event in `events`; the transcript rebuilds from the DB after a restart
-- [ ] Approvals UI: allow once, allow for session, deny
-- [ ] Interrupt (stop the current turn) and resume using `cli_session_id`
-- [ ] Token usage and cost per session
-- [ ] On app start, mark sessions left running as interrupted
+- [x] `agents` crate: a `Agent` trait (start, send, interrupt, resume, stop) with a Claude implementation — the trait describes each CLI's protocol; `Runtime` provides send/interrupt/stop/approvals, and resume happens automatically on send
+- [x] Parse stream events: assistant text, tool use, tool result, usage, result
+- [x] Store every event in `events`; the transcript rebuilds from the DB after a restart
+- [x] Approvals UI: allow once, allow for session, deny (session scope forced, never written to settings files)
+- [x] Interrupt (stop the current turn) and resume using `cli_session_id`
+- [x] Token usage and cost per session
+- [x] On app start, mark sessions left running as interrupted
 
 ### M3: Worktrees + diffs (weeks 6–7)
 

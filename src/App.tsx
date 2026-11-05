@@ -15,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDelete } from "@/components/ConfirmDelete";
-import { Runner } from "@/components/Runner";
+import { SessionTranscript } from "@/components/SessionTranscript";
+import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 
 type Selection =
@@ -56,6 +57,25 @@ export default function App() {
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
+
+  // Whatever is selected shows its children, so load them on selection
+  // (not only when the sidebar row is expanded).
+  useEffect(() => {
+    if (sel?.kind === "project") loadTasks(sel.id);
+    if (sel?.kind === "task") loadSessions(sel.id);
+  }, [sel, loadTasks, loadSessions]);
+
+  // Keep session rows (status, CLI session id) current as agents run.
+  useEffect(() => {
+    const un = listen<Session>("session-updated", ({ payload: s }) =>
+      setSessions((m) =>
+        m[s.task_id] ? { ...m, [s.task_id]: m[s.task_id].map((x) => (x.id === s.id ? s : x)) } : m,
+      ),
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
 
   const allTasks = Object.values(tasks).flat();
   const allSessions = Object.values(sessions).flat();
@@ -180,6 +200,7 @@ export default function App() {
                           onSelect={() => setSel({ kind: "session", id: s.id })}
                           icon={<TerminalSquare className="size-4" />}
                           label={`${s.agent_kind} #${s.id}`}
+                          status={s.status}
                         />
                       ))}
                   </div>
@@ -254,6 +275,7 @@ function TreeRow(props: {
   onSelect: () => void;
   icon: React.ReactNode;
   label: string;
+  status?: string;
 }) {
   return (
     <div
@@ -280,6 +302,18 @@ function TreeRow(props: {
       )}
       {props.icon}
       <span className="truncate">{props.label}</span>
+      {props.status && props.status !== "idle" && (
+        <span
+          className={cn(
+            "ml-auto flex-none text-xs",
+            props.status === "running" && "text-[var(--terminal-success)] animate-pulse",
+            props.status === "failed" && "text-destructive",
+            props.status === "interrupted" && "text-[var(--terminal-warning)]",
+          )}
+        >
+          {props.status}
+        </span>
+      )}
     </div>
   );
 }
@@ -419,7 +453,7 @@ function SessionView(props: {
         actions={<ConfirmDelete what={`session #${s.id}`} onConfirm={props.onDelete} />}
       />
       {props.cwd ? (
-        <Runner agent={s.agent_kind} cwd={props.cwd} />
+        <SessionTranscript session={s} />
       ) : (
         <p className="text-muted-foreground">No working folder for this session.</p>
       )}
