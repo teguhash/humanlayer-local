@@ -148,6 +148,11 @@ pub fn stage_args(task: &Task, skill: &str) -> String {
         if !task.description.trim().is_empty() {
             p.push_str(&format!("\n\n{}", task.description.trim()));
         }
+        if let Some(id) = &task.linear_issue_id {
+            p.push_str(&format!(
+                "\n\nLinear ticket {id}: read ticket.md in the task artifacts directory (its images are in images/ there)."
+            ));
+        }
         p
     } else {
         String::new()
@@ -362,6 +367,9 @@ mod tests {
             worktree_log: None,
             archived_at: None,
             agent: None,
+            linear_url: None,
+            linear_state: None,
+            linear_updated_at: None,
         };
         let claude = |skill| skill_prompt(AgentKind::Claude, skill, &stage_args(&t, skill));
         assert_eq!(claude("create-research"), "/rpi:create-research Add login");

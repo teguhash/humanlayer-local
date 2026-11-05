@@ -76,8 +76,31 @@ impl ArtifactStore {
         out
     }
 
-    /// Read one file as text. `name` must stay inside the task's folder.
+    /// Read one file as text.
     pub fn read(&self, task_id: Id, name: &str) -> Result<String, String> {
+        let bytes = self.read_bytes(task_id, name, 4)?;
+        String::from_utf8(bytes).map_err(|_| format!("{name} is not a text file."))
+    }
+
+    /// An image as a `data:` URL (for the Markdown viewer).
+    pub fn read_data_url(&self, task_id: Id, name: &str) -> Result<String, String> {
+        use base64::Engine;
+        let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+        let mime = match ext.as_deref() {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("svg") => "image/svg+xml",
+            _ => return Err(format!("{name} is not an image.")),
+        };
+        let bytes = self.read_bytes(task_id, name, 16)?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Ok(format!("data:{mime};base64,{b64}"))
+    }
+
+    /// `name` must stay inside the task's folder.
+    fn read_bytes(&self, task_id: Id, name: &str, max_mb: usize) -> Result<Vec<u8>, String> {
         if name
             .split('/')
             .any(|p| p.is_empty() || p == "." || p == "..")
@@ -86,10 +109,10 @@ impl ArtifactStore {
         }
         let path = self.dir(task_id).join(name);
         let bytes = std::fs::read(&path).map_err(|e| format!("{name}: {e}"))?;
-        if bytes.len() > 4 * 1024 * 1024 {
-            return Err(format!("{name} is larger than 4 MB."));
+        if bytes.len() > max_mb * 1024 * 1024 {
+            return Err(format!("{name} is larger than {max_mb} MB."));
         }
-        String::from_utf8(bytes).map_err(|_| format!("{name} is not a text file."))
+        Ok(bytes)
     }
 
     /// Delete the task's folder (task deleted).
@@ -209,6 +232,9 @@ mod tests {
             worktree_log: None,
             archived_at: None,
             agent: None,
+            linear_url: None,
+            linear_state: None,
+            linear_updated_at: None,
         }
     }
 

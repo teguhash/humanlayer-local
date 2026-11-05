@@ -135,6 +135,9 @@ pub async fn move_task(
 ) -> Res<MoveResult> {
     let (task, from) = state.db.move_task(task_id, &stage, index).map_err(err)?;
     emit_task(&app, &task);
+    if from != task.stage {
+        crate::linear::on_stage_changed(&app, &task);
+    }
     if from == task.stage {
         return Ok(MoveResult {
             task,
@@ -566,4 +569,88 @@ pub async fn respond_approval(
     decision: Decision,
 ) -> Res<()> {
     state.rt.respond_approval(session_id, &request_id, decision)
+}
+
+// ---------- Linear ----------
+
+#[tauri::command]
+pub async fn linear_status(state: State<'_, AppState>) -> Res<crate::linear::LinearStatus> {
+    let has_key = state.secrets.linear_key()?.is_some();
+    let mut s = state.linear.status.lock().unwrap().clone();
+    s.has_key = has_key;
+    Ok(s)
+}
+
+/// Check the key with Linear, then save it to the Keychain.
+#[tauri::command]
+pub async fn set_linear_key(
+    state: State<'_, AppState>,
+    key: String,
+) -> Res<crate::linear::LinearStatus> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("Paste a Linear API key first.".into());
+    }
+    let account = hl_linear::Client::new(key).viewer().await.map_err(err)?;
+    state.secrets.set_linear_key(key)?;
+    let mut s = state.linear.status.lock().unwrap();
+    s.has_key = true;
+    s.account = Some(account);
+    s.last_error = None;
+    Ok(s.clone())
+}
+
+#[tauri::command]
+pub async fn clear_linear_key(state: State<'_, AppState>) -> Res<()> {
+    state.secrets.clear_linear_key()?;
+    *state.linear.status.lock().unwrap() = Default::default();
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct ImportResult {
+    pub task: Task,
+    pub note: Option<String>,
+}
+
+#[tauri::command]
+pub async fn import_linear_ticket(
+    app: AppHandle,
+    project_id: Id,
+    reference: String,
+) -> Res<ImportResult> {
+    let (task, note) = crate::linear::import(&app, project_id, &reference).await?;
+    emit_task(&app, &task);
+    Ok(ImportResult { task, note })
+}
+
+#[tauri::command]
+pub async fn sync_linear_now(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Res<crate::linear::LinearStatus> {
+    crate::linear::poll_once(&app).await;
+    linear_status(state).await
+}
+
+/// Post a task doc to its Linear ticket as a comment (updates it if posted before).
+#[tauri::command]
+pub async fn post_doc_to_linear(
+    state: State<'_, AppState>,
+    task_id: Id,
+    path: String,
+) -> Res<String> {
+    crate::linear::post_doc(&state, task_id, &path)
+        .await
+        .map(String::from)
+}
+
+/// An image in the docs folder as a data: URL, for the Markdown viewer.
+#[tauri::command]
+pub async fn read_artifact_data_url(
+    state: State<'_, AppState>,
+    task_id: Id,
+    path: String,
+) -> Res<String> {
+    state.artifacts.read_data_url(task_id, &path)
 }

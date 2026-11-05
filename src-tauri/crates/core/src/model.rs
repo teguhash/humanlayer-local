@@ -39,6 +39,11 @@ pub struct Task {
     /// Output of the last worktree creation and setup command.
     pub worktree_log: Option<String>,
     pub archived_at: Option<String>,
+    /// Linear ticket link (`linear_issue_id` is the identifier, e.g. ENG-1).
+    pub linear_url: Option<String>,
+    /// Workflow state name and ticket updatedAt, as last synced.
+    pub linear_state: Option<String>,
+    pub linear_updated_at: Option<String>,
     /// Overrides the project's `default_agent`. None = use the default.
     pub agent: Option<AgentKind>,
 }
@@ -146,5 +151,16 @@ pub struct Artifact {
     pub kind: String,
     /// File name inside the task's docs folder.
     pub path: String,
+    pub updated_at: String,
+}
+
+/// The ticket fields the app stores on a task.
+#[derive(Debug, Clone, Default)]
+pub struct LinearTicket {
+    pub identifier: String,
+    pub title: String,
+    pub description: String,
+    pub url: String,
+    pub state: String,
     pub updated_at: String,
 }

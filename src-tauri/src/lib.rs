@@ -1,5 +1,7 @@
 mod commands;
+mod linear;
 mod rpi;
+mod secrets;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,6 +21,8 @@ pub const TASK_UPDATED: &str = "task-updated";
 pub const SESSION_CREATED: &str = "session-created";
 /// Payload: task id whose docs list changed.
 pub const ARTIFACTS_UPDATED: &str = "artifacts-updated";
+/// Payload: `linear::Notice` for the notice bar.
+pub const NOTICE: &str = "notice";
 const DB_FILE: &str = "humanlayer-local.db";
 
 pub struct AppState {
@@ -27,6 +31,8 @@ pub struct AppState {
     pub artifacts: Arc<ArtifactStore>,
     /// Task id -> stage whose session waits for the worktree.
     pub pending_stage: Mutex<HashMap<Id, String>>,
+    pub secrets: Arc<secrets::Secrets>,
+    pub linear: linear::LinearState,
 }
 
 struct TauriSink(AppHandle);
@@ -65,10 +71,25 @@ pub fn run() {
                 eprintln!("RPI plugin folder not found; skills will be unavailable");
             }
             // Also marks sessions left running by the last app run as interrupted.
+            let secrets = Arc::new(secrets::Secrets::new());
+            // Sessions get the shell env plus the Linear key, so the `linear`
+            // CLI works inside them with the same key.
+            let env_secrets = secrets.clone();
+            let env = move || {
+                let (mut env, err) = hl_core::shell_env::get();
+                match env_secrets.linear_key() {
+                    Ok(Some(k)) => {
+                        env.insert("LINEAR_API_KEY".into(), k);
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("{e}"),
+                }
+                (env, err)
+            };
             let rt = Runtime::with_options(
                 db.clone(),
                 TauriSink(app.handle().clone()),
-                Arc::new(hl_core::shell_env::get),
+                Arc::new(env),
                 rpi::prepare_fn(db.clone(), artifacts.clone(), plugin),
             )?;
             if let Err(e) =
@@ -81,7 +102,10 @@ pub fn run() {
                 rt,
                 artifacts,
                 pending_stage: Mutex::new(HashMap::new()),
+                secrets,
+                linear: linear::LinearState::default(),
             });
+            linear::start_polling(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -115,6 +139,13 @@ pub fn run() {
             commands::interrupt_session,
             commands::stop_session,
             commands::respond_approval,
+            commands::linear_status,
+            commands::set_linear_key,
+            commands::clear_linear_key,
+            commands::import_linear_ticket,
+            commands::sync_linear_now,
+            commands::post_doc_to_linear,
+            commands::read_artifact_data_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

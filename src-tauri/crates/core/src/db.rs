@@ -11,7 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::artifacts::ArtifactFile;
 use crate::model::{
-    AgentKind, Artifact, Event, Id, Project, Session, Task, stage, status, worktree_status,
+    AgentKind, Artifact, Event, Id, LinearTicket, Project, Session, Task, stage, status,
+    worktree_status,
 };
 use crate::slug::slugify;
 
@@ -20,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_worktrees.sql"),
     include_str!("../migrations/0003_board.sql"),
     include_str!("../migrations/0004_agents.sql"),
+    include_str!("../migrations/0005_linear.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +136,118 @@ impl Db {
                 task_row,
             )
             .map_err(|e| fk_to_not_found(e, "Project"))
+        })
+    }
+
+    /// A task for a Linear ticket: slug from the identifier and title, and
+    /// the imported text remembered for later syncs.
+    pub fn create_linear_task(&self, project_id: Id, t: &LinearTicket) -> Result<Task> {
+        let title = non_empty(&t.title, "Task title")?;
+        let description = t.description.trim();
+        self.with(|c| {
+            let slug = free_slug(
+                c,
+                project_id,
+                &slugify(&format!("{} {title}", t.identifier)),
+            )?;
+            let res = c.query_row(
+                "INSERT INTO tasks (project_id, title, description, slug, position,
+                   linear_issue_id, linear_url, linear_state, linear_updated_at,
+                   linear_synced_title, linear_synced_description)
+                 VALUES (?1, ?2, ?3, ?4, (SELECT coalesce(max(position), -1) + 1
+                                  FROM tasks WHERE project_id = ?1 AND stage = 'backlog'),
+                   ?5, ?6, ?7, ?8, ?2, ?3)
+                 RETURNING *",
+                params![
+                    project_id,
+                    title,
+                    description,
+                    slug,
+                    t.identifier,
+                    t.url,
+                    t.state,
+                    t.updated_at
+                ],
+                task_row,
+            );
+            match res {
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation
+                        && e.extended_code != rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY =>
+                {
+                    Err(Error::Invalid(format!(
+                        "{} is already a task in this project.",
+                        t.identifier
+                    )))
+                }
+                r => r.map_err(|e| fk_to_not_found(e, "Project")),
+            }
+        })
+    }
+
+    /// Apply a newer copy of the ticket. Title and description follow the
+    /// ticket unless they were edited here since the last sync.
+    pub fn sync_linear_task(&self, id: Id, t: &LinearTicket) -> Result<Task> {
+        let title = non_empty(&t.title, "Task title")?;
+        self.update_task(
+            "UPDATE tasks SET
+               title = CASE WHEN title IS linear_synced_title THEN ?2 ELSE title END,
+               description = CASE WHEN description IS linear_synced_description
+                                  THEN ?3 ELSE description END,
+               linear_synced_title = ?2, linear_synced_description = ?3,
+               linear_url = ?4, linear_state = ?5, linear_updated_at = ?6,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            params![
+                id,
+                title,
+                t.description.trim(),
+                t.url,
+                t.state,
+                t.updated_at
+            ],
+        )
+    }
+
+    pub fn set_linear_state(&self, id: Id, state: &str) -> Result<Task> {
+        self.update_task(
+            "UPDATE tasks SET linear_state = ?2 WHERE id = ?1 RETURNING *",
+            params![id, state],
+        )
+    }
+
+    /// Linked tasks that are not archived, across all projects.
+    pub fn linked_tasks(&self) -> Result<Vec<Task>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT * FROM tasks WHERE linear_issue_id IS NOT NULL AND archived_at IS NULL
+                 ORDER BY id",
+            )?;
+            let rows = st.query_map([], task_row)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    pub fn linear_post(&self, task_id: Id, path: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT comment_id FROM linear_posts WHERE task_id = ?1 AND path = ?2",
+                params![task_id, path],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
+    pub fn set_linear_post(&self, task_id: Id, path: &str, comment_id: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO linear_posts (task_id, path, comment_id) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (task_id, path) DO UPDATE SET comment_id = ?3,
+                   posted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+                params![task_id, path, comment_id],
+            )?;
+            Ok(())
         })
     }
 
@@ -609,6 +723,9 @@ fn task_row(r: &Row) -> rusqlite::Result<Task> {
         worktree_status: r.get("worktree_status")?,
         worktree_log: r.get("worktree_log")?,
         archived_at: r.get("archived_at")?,
+        linear_url: r.get("linear_url")?,
+        linear_state: r.get("linear_state")?,
+        linear_updated_at: r.get("linear_updated_at")?,
         agent: r
             .get::<_, Option<String>>("agent")?
             .map(agent_col)
@@ -701,6 +818,53 @@ mod tests {
         let t = db.set_task_agent(t.id, None).unwrap();
         assert_eq!(db.agent_for(&t).unwrap(), AgentKind::Codex);
         assert!(db.set_project_agent(999, AgentKind::Codex).is_err());
+    }
+
+    #[test]
+    fn linear_import_sync_and_posts() {
+        let db = db();
+        let p = db.create_project("Demo", "/repo").unwrap();
+        let mut tk = LinearTicket {
+            identifier: "ENG-7".into(),
+            title: "Fix login".into(),
+            description: " It breaks ".into(),
+            url: "https://linear.app/x/issue/ENG-7".into(),
+            state: "Todo".into(),
+            updated_at: "1".into(),
+        };
+        let t = db.create_linear_task(p.id, &tk).unwrap();
+        assert_eq!(t.slug, "eng-7-fix-login");
+        assert_eq!(
+            (t.description.as_str(), t.linear_state.as_deref()),
+            ("It breaks", Some("Todo"))
+        );
+        let dup = db.create_linear_task(p.id, &tk).unwrap_err();
+        assert!(dup.to_string().contains("already a task"), "{dup}");
+        assert!(db.create_linear_task(999, &tk).is_err());
+
+        // Untouched fields follow the ticket.
+        tk.title = "Fix login v2".into();
+        tk.state = "In Progress".into();
+        let t = db.sync_linear_task(t.id, &tk).unwrap();
+        assert_eq!(
+            (t.title.as_str(), t.linear_state.as_deref()),
+            ("Fix login v2", Some("In Progress"))
+        );
+        // A local edit sticks.
+        db.update_task_text(t.id, "My title", "It breaks").unwrap();
+        tk.title = "Fix login v3".into();
+        tk.description = "Now with steps".into();
+        let t = db.sync_linear_task(t.id, &tk).unwrap();
+        assert_eq!(
+            (t.title.as_str(), t.description.as_str()),
+            ("My title", "Now with steps")
+        );
+        assert_eq!(db.linked_tasks().unwrap().len(), 1);
+
+        assert_eq!(db.linear_post(t.id, "a.md").unwrap(), None);
+        db.set_linear_post(t.id, "a.md", "c1").unwrap();
+        db.set_linear_post(t.id, "a.md", "c2").unwrap();
+        assert_eq!(db.linear_post(t.id, "a.md").unwrap().as_deref(), Some("c2"));
     }
 
     #[test]
