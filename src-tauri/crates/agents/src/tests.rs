@@ -465,7 +465,10 @@ async fn session_folder_is_fixed_and_new_sessions_use_the_worktree() {
     let repo = fx.dir.join("repo").to_string_lossy().into_owned();
     fx.rt.send(id, "plain:one").await.unwrap();
     wait_status(&mut fx.rx, status::IDLE).await;
-    assert_eq!(fx.db.get_session(id).unwrap().cwd.as_deref(), Some(repo.as_str()));
+    assert_eq!(
+        fx.db.get_session(id).unwrap().cwd.as_deref(),
+        Some(repo.as_str())
+    );
 
     // The task gets a worktree that is still being set up.
     let wt = fx.dir.join("wt");
@@ -488,10 +491,16 @@ async fn session_folder_is_fixed_and_new_sessions_use_the_worktree() {
     }
     fx.rt.send(id, "plain:two").await.unwrap();
     wait_status(&mut fx.rx, status::IDLE).await;
-    assert_eq!(fx.db.get_session(id).unwrap().cwd.as_deref(), Some(repo.as_str()));
+    assert_eq!(
+        fx.db.get_session(id).unwrap().cwd.as_deref(),
+        Some(repo.as_str())
+    );
     fx.rt.send(s2.id, "plain:y").await.unwrap();
     wait_status(&mut fx.rx, status::IDLE).await;
-    assert_eq!(fx.db.get_session(s2.id).unwrap().cwd.as_deref(), Some(wt.as_str()));
+    assert_eq!(
+        fx.db.get_session(s2.id).unwrap().cwd.as_deref(),
+        Some(wt.as_str())
+    );
     fx.rt.shutdown();
 }
 

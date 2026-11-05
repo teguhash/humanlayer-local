@@ -168,7 +168,14 @@ impl Db {
             "UPDATE tasks SET worktree_path = ?2, branch = ?3, base_ref = ?4, base_commit = ?5,
                worktree_status = ?6, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1 RETURNING *",
-            params![id, path, branch, base_ref, base_commit, worktree_status::SETTING_UP],
+            params![
+                id,
+                path,
+                branch,
+                base_ref,
+                base_commit,
+                worktree_status::SETTING_UP
+            ],
         )
     }
 
@@ -273,7 +280,10 @@ impl Db {
 
     pub fn set_session_cwd(&self, id: Id, cwd: &str) -> Result<()> {
         self.with(|c| {
-            c.execute("UPDATE sessions SET cwd = ?2 WHERE id = ?1", params![id, cwd])?;
+            c.execute(
+                "UPDATE sessions SET cwd = ?2 WHERE id = ?1",
+                params![id, cwd],
+            )?;
             Ok(())
         })
     }
@@ -567,12 +577,19 @@ mod tests {
             .unwrap();
         let t = db.set_worktree(t.id, "/w", "b", "main", "abc").unwrap();
         assert_eq!(
-            (t.worktree_path.as_deref(), t.branch.as_deref(), t.worktree_status.as_deref()),
+            (
+                t.worktree_path.as_deref(),
+                t.branch.as_deref(),
+                t.worktree_status.as_deref()
+            ),
             (Some("/w"), Some("b"), Some(worktree_status::SETTING_UP))
         );
         assert_eq!(db.fail_unfinished_worktrees().unwrap(), 1);
         let t = db.get_task(t.id).unwrap();
-        assert_eq!(t.worktree_status.as_deref(), Some(worktree_status::SETUP_FAILED));
+        assert_eq!(
+            t.worktree_status.as_deref(),
+            Some(worktree_status::SETUP_FAILED)
+        );
         assert!(t.worktree_log.unwrap().contains("app quit"));
         let t = db
             .set_worktree_status(t.id, worktree_status::READY, Some("ok"))
@@ -581,9 +598,22 @@ mod tests {
         let t = db.clear_worktree(t.id).unwrap();
         assert_eq!((t.worktree_path, t.worktree_status), (None, None));
         assert_eq!(t.branch.as_deref(), Some("b"));
-        assert!(db.set_task_archived(t.id, true).unwrap().archived_at.is_some());
-        assert!(db.set_task_archived(t.id, false).unwrap().archived_at.is_none());
-        assert!(matches!(db.clear_worktree(999), Err(Error::NotFound("Task"))));
+        assert!(
+            db.set_task_archived(t.id, true)
+                .unwrap()
+                .archived_at
+                .is_some()
+        );
+        assert!(
+            db.set_task_archived(t.id, false)
+                .unwrap()
+                .archived_at
+                .is_none()
+        );
+        assert!(matches!(
+            db.clear_worktree(999),
+            Err(Error::NotFound("Task"))
+        ));
 
         let s = db.create_session(t.id, AgentKind::Claude).unwrap();
         db.set_session_cwd(s.id, "/w").unwrap();

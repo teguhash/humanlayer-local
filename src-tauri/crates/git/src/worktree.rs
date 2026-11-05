@@ -41,7 +41,11 @@ pub fn create(repo: &Path, cfg: &WorkspaceConfig, which: Branch, env: &Env) -> R
         Branch::New { slug } => {
             let base_commit = git(
                 repo,
-                &["rev-parse", "--verify", &format!("{}^{{commit}}", cfg.source_ref)],
+                &[
+                    "rev-parse",
+                    "--verify",
+                    &format!("{}^{{commit}}", cfg.source_ref),
+                ],
                 env,
             )
             .map_err(|_| Error::Invalid(format!("Base ref `{}` not found.", cfg.source_ref)))?;
@@ -55,7 +59,14 @@ pub fn create(repo: &Path, cfg: &WorkspaceConfig, which: Branch, env: &Env) -> R
             mkdir_parent(&path)?;
             git(
                 repo,
-                &["worktree", "add", "-b", &branch, &path.to_string_lossy(), &base_commit],
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    &branch,
+                    &path.to_string_lossy(),
+                    &base_commit,
+                ],
                 env,
             )?;
             log.push_str(&format!(
@@ -75,7 +86,11 @@ pub fn create(repo: &Path, cfg: &WorkspaceConfig, which: Branch, env: &Env) -> R
                 n += 1;
             }
             mkdir_parent(&path)?;
-            git(repo, &["worktree", "add", &path.to_string_lossy(), branch], env)?;
+            git(
+                repo,
+                &["worktree", "add", &path.to_string_lossy(), branch],
+                env,
+            )?;
             log.push_str(&format!("Checked out existing branch {branch}\n"));
             let head = git(&path, &["rev-parse", "HEAD"], env)?;
             (path, branch.to_string(), String::new(), head)
@@ -118,9 +133,18 @@ fn branch_exists(repo: &Path, branch: &str, env: &Env) -> Result<bool> {
 }
 
 /// First slug, slug-2, slug-3, ... whose branch and folder are both free.
-fn free_name(repo: &Path, cfg: &WorkspaceConfig, slug: &str, env: &Env) -> Result<(PathBuf, String)> {
+fn free_name(
+    repo: &Path,
+    cfg: &WorkspaceConfig,
+    slug: &str,
+    env: &Env,
+) -> Result<(PathBuf, String)> {
     for n in 1..100 {
-        let s = if n == 1 { slug.to_string() } else { format!("{slug}-{n}") };
+        let s = if n == 1 {
+            slug.to_string()
+        } else {
+            format!("{slug}-{n}")
+        };
         let branch = cfg.branch(repo, &s);
         git(repo, &["check-ref-format", "--branch", &branch], env)
             .map_err(|_| Error::Invalid(format!("`{branch}` is not a valid branch name.")))?;
@@ -251,7 +275,10 @@ mod tests {
         assert_eq!(a.branch, "fix-it");
         assert_eq!(a.base_ref, "main");
         assert_eq!(a.path, wt_root.join("fix-it"));
-        assert_eq!(std::fs::read_to_string(a.path.join(".env")).unwrap(), "SECRET=1");
+        assert_eq!(
+            std::fs::read_to_string(a.path.join(".env")).unwrap(),
+            "SECRET=1"
+        );
         assert!(a.log.contains("Copied: .env"), "{}", a.log);
 
         // Same slug again gets a suffix.
@@ -260,7 +287,10 @@ mod tests {
 
         let (ok, out) = run_setup(&a.path, "echo hi; echo err >&2; pwd", &env);
         assert!(ok);
-        assert!(out.contains("hi") && out.contains("err") && out.contains("fix-it"), "{out}");
+        assert!(
+            out.contains("hi") && out.contains("err") && out.contains("fix-it"),
+            "{out}"
+        );
         let (ok, out) = run_setup(&a.path, "exit 3", &env);
         assert!(!ok && out.contains("code 3"), "{out}");
 
@@ -275,12 +305,26 @@ mod tests {
         let r = create(
             &repo,
             &c,
-            Branch::Existing { branch: "fix-it", slug: "fix-it" },
+            Branch::Existing {
+                branch: "fix-it",
+                slug: "fix-it",
+            },
             &env,
         )
         .unwrap();
         assert_eq!(r.path, a.path);
-        assert!(create(&repo, &c, Branch::Existing { branch: "nope", slug: "x" }, &env).is_err());
+        assert!(
+            create(
+                &repo,
+                &c,
+                Branch::Existing {
+                    branch: "nope",
+                    slug: "x"
+                },
+                &env
+            )
+            .is_err()
+        );
 
         // Already-deleted folder: remove just prunes.
         std::fs::remove_dir_all(&b.path).unwrap();

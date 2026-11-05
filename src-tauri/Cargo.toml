@@ -25,6 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 hl-core = { path = "crates/core" }
 hl-agents = { path = "crates/agents" }
+tokio = { workspace = true }
 hl-git = { path = "crates/git" }
 
 

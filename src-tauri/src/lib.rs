@@ -10,6 +10,8 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Webview events. Payloads: `SessionEvent` and `Session`.
 pub const SESSION_EVENT: &str = "session-event";
 pub const SESSION_UPDATED: &str = "session-updated";
+/// Payload: `Task` (worktree progress, archive).
+pub const TASK_UPDATED: &str = "task-updated";
 const DB_FILE: &str = "humanlayer-local.db";
 
 pub struct AppState {
@@ -45,6 +47,8 @@ pub fn run() {
             // ~/Library/Application Support/<identifier>/humanlayer-local.db
             let path = app.path().app_data_dir()?.join(DB_FILE);
             let db = Arc::new(Db::open(&path)?);
+            // No worktree setup survives an app restart.
+            db.fail_unfinished_worktrees()?;
             // Also marks sessions left running by the last app run as interrupted.
             let rt = Runtime::new(db.clone(), TauriSink(app.handle().clone()))?;
             app.manage(AppState { db, rt });
@@ -57,6 +61,13 @@ pub fn run() {
             commands::list_tasks,
             commands::create_task,
             commands::delete_task,
+            commands::create_worktree,
+            commands::retry_setup,
+            commands::worktree_dirty_files,
+            commands::get_diff,
+            commands::get_file_diff,
+            commands::archive_task,
+            commands::unarchive_task,
             commands::list_sessions,
             commands::create_session,
             commands::delete_session,

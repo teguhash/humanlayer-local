@@ -70,7 +70,11 @@ pub fn summary(wt: &Path, base_ref: &str, base_commit: &str, env: &Env) -> Resul
 
 fn count_lines(b: &[u8]) -> u64 {
     let n = b.iter().filter(|&&c| c == b'\n').count() as u64;
-    if b.last().is_some_and(|&c| c != b'\n') { n + 1 } else { n }
+    if b.last().is_some_and(|&c| c != b'\n') {
+        n + 1
+    } else {
+        n
+    }
 }
 
 fn tracked(wt: &Path, mb: &str, env: &Env) -> Result<Vec<FileChange>> {
@@ -89,7 +93,10 @@ fn tracked(wt: &Path, mb: &str, env: &Env) -> Result<Vec<FileChange>> {
         let kind = code.chars().next().unwrap_or('M');
         let two_paths = matches!(kind, 'R' | 'C');
         let (old_path, path) = if two_paths {
-            (Some(names[i + 1].clone()), names.get(i + 2).cloned().unwrap_or_default())
+            (
+                Some(names[i + 1].clone()),
+                names.get(i + 2).cloned().unwrap_or_default(),
+            )
         } else {
             (None, names.get(i + 1).cloned().unwrap_or_default())
         };
@@ -153,7 +160,12 @@ pub fn file_patch(
     let is_untracked = untracked(wt, env)?.iter().any(|p| p == path);
     let raw = if is_untracked {
         // Exit code 1 means "files differ", which is the normal case here.
-        git_raw(wt, &["diff", "--no-index", "--", "/dev/null", path], env, &[1])?
+        git_raw(
+            wt,
+            &["diff", "--no-index", "--", "/dev/null", path],
+            env,
+            &[1],
+        )?
     } else {
         let mut args = vec!["diff", "-M", mb.as_str(), "--"];
         if let Some(o) = old_path {
@@ -183,15 +195,30 @@ mod tests {
     fn summary_and_patches() {
         let repo = repo("diff");
         let env = env();
-        sh(&repo, "printf 'keep\\n' > b.txt && printf 'x\\n' > gone.txt && git add . && git commit -qm more");
+        sh(
+            &repo,
+            "printf 'keep\\n' > b.txt && printf 'x\\n' > gone.txt && git add . && git commit -qm more",
+        );
         sh(&repo, "git checkout -q -b task");
         // Committed change, rename, delete, uncommitted edit, untracked, binary.
-        sh(&repo, "printf 'one\\nTWO\\nthree\\n' > a.txt && git commit -qam edit");
-        sh(&repo, "git mv b.txt c.txt && git rm -q gone.txt && git commit -qm mv");
+        sh(
+            &repo,
+            "printf 'one\\nTWO\\nthree\\n' > a.txt && git commit -qam edit",
+        );
+        sh(
+            &repo,
+            "git mv b.txt c.txt && git rm -q gone.txt && git commit -qm mv",
+        );
         // Base branch moves on; that must not show up.
-        sh(&repo, "git checkout -q main && printf 'z\\n' > main-only.txt && git add . && git commit -qm main && git checkout -q task");
+        sh(
+            &repo,
+            "git checkout -q main && printf 'z\\n' > main-only.txt && git add . && git commit -qm main && git checkout -q task",
+        );
         sh(&repo, "printf 'keep\\nmore\\n' > c.txt");
-        sh(&repo, "printf 'n1\\nn2' > new.txt && printf '\\000\\001' > bin.dat");
+        sh(
+            &repo,
+            "printf 'n1\\nn2' > new.txt && printf '\\000\\001' > bin.dat",
+        );
 
         let base = git(&repo, &["rev-parse", "main~1"], &env).unwrap();
         let s = summary(&repo, "main", &base, &env).unwrap();
@@ -214,9 +241,15 @@ mod tests {
         assert_eq!(s.files[2].old_path.as_deref(), Some("b.txt"));
 
         let p = file_patch(&repo, "main", &base, "a.txt", None, &env).unwrap();
-        assert!(p.contains("-two") && p.contains("+TWO") && p.contains("+three"), "{p}");
+        assert!(
+            p.contains("-two") && p.contains("+TWO") && p.contains("+three"),
+            "{p}"
+        );
         let p = file_patch(&repo, "main", &base, "c.txt", Some("b.txt"), &env).unwrap();
-        assert!(p.contains("rename from b.txt") && p.contains("+more"), "{p}");
+        assert!(
+            p.contains("rename from b.txt") && p.contains("+more"),
+            "{p}"
+        );
         let p = file_patch(&repo, "main", &base, "new.txt", None, &env).unwrap();
         assert!(p.contains("+n1") && p.contains("+n2"), "{p}");
 

@@ -4,11 +4,18 @@
 
 use std::path::PathBuf;
 
-use hl_agents::{Decision, SessionUsage, Transcript};
-use hl_core::model::{AgentKind, Id, Project, Session, Task};
-use tauri::State;
+use std::sync::Arc;
+use std::time::Duration;
 
-use crate::AppState;
+use hl_agents::{Decision, SessionUsage, Transcript};
+use hl_core::Db;
+use hl_core::model::{AgentKind, Id, Project, Session, Task, worktree_status as ws};
+use hl_git::config::{WorkspaceConfig, slugify};
+use hl_git::diff::DiffSummary;
+use hl_git::worktree::{self, Branch};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::{AppState, TASK_UPDATED};
 
 type Res<T> = Result<T, String>;
 
@@ -68,12 +75,305 @@ pub async fn create_task(state: State<'_, AppState>, project_id: Id, title: Stri
     state.db.create_task(project_id, &title).map_err(err)
 }
 
+/// Delete a task. Its worktree folder is removed first (the branch is
+/// kept); `force` discards uncommitted changes in it.
 #[tauri::command]
-pub async fn delete_task(state: State<'_, AppState>, id: Id) -> Res<()> {
+pub async fn delete_task(state: State<'_, AppState>, id: Id, force: Option<bool>) -> Res<()> {
+    let task = state.db.get_task(id).map_err(err)?;
+    stop_task_sessions(&state, id).await;
+    remove_worktree(&state.db, &task, force.unwrap_or(false)).await?;
     state.db.delete_task(id).map_err(err)?;
     // Stop agent processes whose session row is gone.
     state.rt.prune();
     Ok(())
+}
+
+// ---- worktrees ----
+
+fn emit_task(app: &AppHandle, t: &Task) {
+    if let Err(e) = app.emit(TASK_UPDATED, t) {
+        eprintln!("emit failed: {e}");
+    }
+}
+
+fn busy(t: &Task) -> bool {
+    matches!(
+        t.worktree_status.as_deref(),
+        Some(ws::CREATING | ws::SETTING_UP)
+    )
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Res<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)
+}
+
+/// Create the task's worktree, then run the setup command, in the
+/// background. Returns at once with status `creating`; progress arrives as
+/// `task-updated` events. A task that had a worktree before (restored from
+/// the archive) gets its old branch back.
+#[tauri::command]
+pub async fn create_worktree(app: AppHandle, state: State<'_, AppState>, task_id: Id) -> Res<Task> {
+    let task = state.db.get_task(task_id).map_err(err)?;
+    if task.worktree_path.is_some() || busy(&task) {
+        return Err("This task already has a worktree.".into());
+    }
+    let repo = PathBuf::from(
+        state
+            .db
+            .get_project(task.project_id)
+            .map_err(err)?
+            .repo_path,
+    );
+    let cfg = {
+        let repo = repo.clone();
+        blocking(move || WorkspaceConfig::load(&repo))
+            .await?
+            .map_err(err)?
+    };
+    if cfg.disabled {
+        return Err(
+            "Worktrees are turned off for this project (\"disabled\": true in .humanlayer/workspace.json)."
+                .into(),
+        );
+    }
+    let t = state
+        .db
+        .set_worktree_status(task_id, ws::CREATING, Some(""))
+        .map_err(err)?;
+    emit_task(&app, &t);
+    let db = state.db.clone();
+    std::thread::spawn(move || worktree_job(&app, &db, &task, &repo, &cfg));
+    Ok(t)
+}
+
+fn worktree_job(
+    app: &AppHandle,
+    db: &Db,
+    task: &Task,
+    repo: &std::path::Path,
+    cfg: &WorkspaceConfig,
+) {
+    let (env, _) = hl_core::shell_env::get();
+    let slug = slugify(&task.title);
+    let which = match &task.branch {
+        Some(b) => Branch::Existing {
+            branch: b,
+            slug: &slug,
+        },
+        None => Branch::New { slug: &slug },
+    };
+    let save = |status: &str, log: &str| match db.set_worktree_status(task.id, status, Some(log)) {
+        Ok(t) => emit_task(app, &t),
+        Err(e) => eprintln!("task {}: {e}", task.id),
+    };
+    let c = match worktree::create(repo, cfg, which, &env) {
+        Ok(c) => c,
+        Err(e) => return save(ws::FAILED, &e.to_string()),
+    };
+    // A restored branch keeps its original base.
+    let base_ref = task
+        .base_ref
+        .clone()
+        .filter(|_| c.base_ref.is_empty())
+        .unwrap_or(c.base_ref);
+    let base_commit = task.base_commit.clone().unwrap_or(c.base_commit);
+    if let Err(e) = db.set_worktree(
+        task.id,
+        &c.path.to_string_lossy(),
+        &c.branch,
+        &base_ref,
+        &base_commit,
+    ) {
+        return save(ws::FAILED, &format!("{}\n{e}", c.log));
+    }
+    run_setup_step(app, db, task.id, &c.path, &cfg.setup_command, c.log, &env);
+}
+
+fn run_setup_step(
+    app: &AppHandle,
+    db: &Db,
+    task_id: Id,
+    wt: &std::path::Path,
+    command: &str,
+    mut log: String,
+    env: &hl_git::Env,
+) {
+    let save = |status: &str, log: &str| match db.set_worktree_status(task_id, status, Some(log)) {
+        Ok(t) => emit_task(app, &t),
+        Err(e) => eprintln!("task {task_id}: {e}"),
+    };
+    if command.trim().is_empty() {
+        log.push_str(
+            "No setup command (set repos[0].setupCommand in .humanlayer/workspace.json).\n",
+        );
+        return save(ws::READY, &log);
+    }
+    log.push_str(&format!("$ {command}\n"));
+    save(ws::SETTING_UP, &log);
+    let (ok, out) = worktree::run_setup(wt, command, env);
+    log.push_str(&out);
+    save(if ok { ws::READY } else { ws::SETUP_FAILED }, &log);
+}
+
+/// Run the setup command again (after it failed, or to refresh).
+#[tauri::command]
+pub async fn retry_setup(app: AppHandle, state: State<'_, AppState>, task_id: Id) -> Res<Task> {
+    let task = state.db.get_task(task_id).map_err(err)?;
+    let Some(path) = task.worktree_path.clone().filter(|_| !busy(&task)) else {
+        return Err("No finished worktree to set up.".into());
+    };
+    let repo = PathBuf::from(
+        state
+            .db
+            .get_project(task.project_id)
+            .map_err(err)?
+            .repo_path,
+    );
+    let cfg = blocking(move || WorkspaceConfig::load(&repo))
+        .await?
+        .map_err(err)?;
+    let t = state
+        .db
+        .set_worktree_status(task_id, ws::SETTING_UP, None)
+        .map_err(err)?;
+    emit_task(&app, &t);
+    let db = state.db.clone();
+    std::thread::spawn(move || {
+        let (env, _) = hl_core::shell_env::get();
+        run_setup_step(
+            &app,
+            &db,
+            task_id,
+            &PathBuf::from(path),
+            &cfg.setup_command,
+            String::new(),
+            &env,
+        );
+    });
+    Ok(t)
+}
+
+/// Uncommitted files in the task's worktree (empty when there is none).
+#[tauri::command]
+pub async fn worktree_dirty_files(state: State<'_, AppState>, task_id: Id) -> Res<Vec<String>> {
+    let task = state.db.get_task(task_id).map_err(err)?;
+    let Some(path) = task.worktree_path.map(PathBuf::from).filter(|p| p.is_dir()) else {
+        return Ok(vec![]);
+    };
+    blocking(move || worktree::dirty_files(&path, &hl_core::shell_env::get().0))
+        .await?
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_diff(state: State<'_, AppState>, task_id: Id) -> Res<DiffSummary> {
+    let (wt, base_ref, base_commit) = diff_target(&state.db, task_id)?;
+    blocking(move || {
+        hl_git::diff::summary(&wt, &base_ref, &base_commit, &hl_core::shell_env::get().0)
+    })
+    .await?
+    .map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_file_diff(
+    state: State<'_, AppState>,
+    task_id: Id,
+    path: String,
+    old_path: Option<String>,
+) -> Res<String> {
+    let (wt, base_ref, base_commit) = diff_target(&state.db, task_id)?;
+    blocking(move || {
+        hl_git::diff::file_patch(
+            &wt,
+            &base_ref,
+            &base_commit,
+            &path,
+            old_path.as_deref(),
+            &hl_core::shell_env::get().0,
+        )
+    })
+    .await?
+    .map_err(err)
+}
+
+fn diff_target(db: &Db, task_id: Id) -> Res<(PathBuf, String, String)> {
+    let task = db.get_task(task_id).map_err(err)?;
+    let wt = task
+        .worktree_path
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .ok_or("This task has no worktree.")?;
+    Ok((
+        wt,
+        task.base_ref.unwrap_or_default(),
+        task.base_commit.unwrap_or_default(),
+    ))
+}
+
+/// Stop the task's agent processes and wait (up to 5 s) for them to exit,
+/// so nothing writes into a worktree that is being removed.
+async fn stop_task_sessions(state: &AppState, task_id: Id) {
+    let ids: Vec<Id> = state
+        .db
+        .list_sessions(task_id)
+        .map(|v| v.into_iter().map(|s| s.id).collect())
+        .unwrap_or_default();
+    for &id in &ids {
+        let _ = state.rt.stop(id);
+    }
+    for _ in 0..250 {
+        if !ids.iter().any(|&id| state.rt.is_live(id)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn remove_worktree(db: &Arc<Db>, task: &Task, force: bool) -> Res<()> {
+    if busy(task) {
+        return Err("Wait for the worktree setup to finish first.".into());
+    }
+    let Some(path) = task.worktree_path.clone() else {
+        return Ok(());
+    };
+    let repo = PathBuf::from(db.get_project(task.project_id).map_err(err)?.repo_path);
+    blocking(move || {
+        worktree::remove(
+            &repo,
+            &PathBuf::from(path),
+            force,
+            &hl_core::shell_env::get().0,
+        )
+    })
+    .await?
+    .map_err(err)?;
+    db.clear_worktree(task.id).map_err(err)?;
+    Ok(())
+}
+
+/// Archive a task: stop its sessions and remove its worktree folder (the
+/// branch is kept). `force` discards uncommitted changes in the worktree.
+#[tauri::command]
+pub async fn archive_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: Id,
+    force: bool,
+) -> Res<Task> {
+    let task = state.db.get_task(task_id).map_err(err)?;
+    stop_task_sessions(&state, task_id).await;
+    remove_worktree(&state.db, &task, force).await?;
+    let t = state.db.set_task_archived(task_id, true).map_err(err)?;
+    emit_task(&app, &t);
+    Ok(t)
+}
+
+#[tauri::command]
+pub async fn unarchive_task(app: AppHandle, state: State<'_, AppState>, task_id: Id) -> Res<Task> {
+    let t = state.db.set_task_archived(task_id, false).map_err(err)?;
+    emit_task(&app, &t);
+    Ok(t)
 }
 
 // ---- sessions ----
