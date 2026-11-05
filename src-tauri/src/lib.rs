@@ -2,21 +2,39 @@ mod commands;
 
 use std::sync::Arc;
 
-use hl_agents::{AgentEvent, AgentManager};
+use hl_agents::{Runtime, SessionEvent, Sink};
 use hl_core::Db;
-use tauri::{Emitter, Manager};
+use hl_core::model::Session;
+use tauri::{AppHandle, Emitter, Manager};
 
-pub const AGENT_EVENT: &str = "agent-event";
+/// Webview events. Payloads: `SessionEvent` and `Session`.
+pub const SESSION_EVENT: &str = "session-event";
+pub const SESSION_UPDATED: &str = "session-updated";
 const DB_FILE: &str = "humanlayer-local.db";
 
 pub struct AppState {
-    pub db: Db,
-    pub agents: Arc<AgentManager>,
+    pub db: Arc<Db>,
+    pub rt: Arc<Runtime>,
+}
+
+struct TauriSink(AppHandle);
+
+impl Sink for TauriSink {
+    fn event(&self, event: &SessionEvent) {
+        if let Err(e) = self.0.emit(SESSION_EVENT, event) {
+            eprintln!("emit failed: {e}");
+        }
+    }
+    fn session(&self, session: &Session) {
+        if let Err(e) = self.0.emit(SESSION_UPDATED, session) {
+            eprintln!("emit failed: {e}");
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -26,14 +44,10 @@ pub fn run() {
 
             // ~/Library/Application Support/<identifier>/humanlayer-local.db
             let path = app.path().app_data_dir()?.join(DB_FILE);
-            let db = Db::open(&path)?;
-            let handle = app.handle().clone();
-            let agents = AgentManager::new(move |ev: AgentEvent| {
-                if let Err(e) = handle.emit(AGENT_EVENT, ev) {
-                    eprintln!("emit failed: {e}");
-                }
-            });
-            app.manage(AppState { db, agents });
+            let db = Arc::new(Db::open(&path)?);
+            // Also marks sessions left running by the last app run as interrupted.
+            let rt = Runtime::new(db.clone(), TauriSink(app.handle().clone()))?;
+            app.manage(AppState { db, rt });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -46,10 +60,22 @@ pub fn run() {
             commands::list_sessions,
             commands::create_session,
             commands::delete_session,
-            commands::start_run,
+            commands::get_transcript,
+            commands::get_usage,
+            commands::send_message,
+            commands::interrupt_session,
+            commands::stop_session,
             commands::respond_approval,
-            commands::stop_run,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event
+            && let Some(state) = handle.try_state::<AppState>()
+        {
+            // Don't leave CLI processes behind.
+            state.rt.shutdown();
+        }
+    });
 }

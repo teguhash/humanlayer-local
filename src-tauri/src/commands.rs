@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
+use hl_agents::{Decision, SessionUsage, Transcript};
 use hl_core::model::{AgentKind, Id, Project, Session, Task};
-use serde_json::Value;
 use tauri::State;
 
 use crate::AppState;
@@ -50,7 +50,10 @@ pub async fn create_project(
 
 #[tauri::command]
 pub async fn delete_project(state: State<'_, AppState>, id: Id) -> Res<()> {
-    state.db.delete_project(id).map_err(err)
+    state.db.delete_project(id).map_err(err)?;
+    // Stop agent processes whose session row is gone.
+    state.rt.prune();
+    Ok(())
 }
 
 // ---- tasks ----
@@ -67,7 +70,10 @@ pub async fn create_task(state: State<'_, AppState>, project_id: Id, title: Stri
 
 #[tauri::command]
 pub async fn delete_task(state: State<'_, AppState>, id: Id) -> Res<()> {
-    state.db.delete_task(id).map_err(err)
+    state.db.delete_task(id).map_err(err)?;
+    // Stop agent processes whose session row is gone.
+    state.rt.prune();
+    Ok(())
 }
 
 // ---- sessions ----
@@ -88,35 +94,45 @@ pub async fn create_session(
 
 #[tauri::command]
 pub async fn delete_session(state: State<'_, AppState>, id: Id) -> Res<()> {
-    state.db.delete_session(id).map_err(err)
+    state.db.delete_session(id).map_err(err)?;
+    // Stop agent processes whose session row is gone.
+    state.rt.prune();
+    Ok(())
 }
 
-// ---- agent runs (M0 spike runner; not persisted until M2) ----
+// ---- agent sessions ----
 
 #[tauri::command]
-pub async fn start_run(
-    state: State<'_, AppState>,
-    agent: AgentKind,
-    cwd: String,
-    prompt: String,
-) -> Res<String> {
-    state.agents.start(agent, &cwd, &prompt).await
+pub async fn get_transcript(state: State<'_, AppState>, session_id: Id) -> Res<Transcript> {
+    state.rt.transcript(session_id)
+}
+
+#[tauri::command]
+pub async fn get_usage(state: State<'_, AppState>, session_id: Id) -> Res<SessionUsage> {
+    state.rt.usage(session_id)
+}
+
+#[tauri::command]
+pub async fn send_message(state: State<'_, AppState>, session_id: Id, text: String) -> Res<()> {
+    state.rt.send(session_id, &text).await
+}
+
+#[tauri::command]
+pub async fn interrupt_session(state: State<'_, AppState>, session_id: Id) -> Res<()> {
+    state.rt.interrupt(session_id)
+}
+
+#[tauri::command]
+pub async fn stop_session(state: State<'_, AppState>, session_id: Id) -> Res<()> {
+    state.rt.stop(session_id)
 }
 
 #[tauri::command]
 pub async fn respond_approval(
     state: State<'_, AppState>,
-    run_id: String,
+    session_id: Id,
     request_id: String,
-    allow: bool,
-    input: Value,
+    decision: Decision,
 ) -> Res<()> {
-    state
-        .agents
-        .respond_approval(&run_id, &request_id, allow, input)
-}
-
-#[tauri::command]
-pub async fn stop_run(state: State<'_, AppState>, run_id: String) -> Res<()> {
-    state.agents.stop(&run_id)
+    state.rt.respond_approval(session_id, &request_id, decision)
 }

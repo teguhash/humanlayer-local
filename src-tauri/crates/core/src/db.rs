@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::model::{AgentKind, Id, Project, Session, Task};
+use crate::model::{AgentKind, Event, Id, Project, Session, Task, status};
 
 const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
 
@@ -176,6 +176,79 @@ impl Db {
         self.delete("sessions", "Session", id)
     }
 
+    /// Set status. `running` also sets `started_at` the first time; leaving
+    /// `running` sets `ended_at`.
+    pub fn set_session_status(&self, id: Id, new_status: &str) -> Result<Session> {
+        self.with(|c| {
+            c.query_row(
+                "UPDATE sessions SET
+                   status = ?2,
+                   started_at = CASE WHEN ?2 = 'running' THEN coalesce(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ELSE started_at END,
+                   ended_at = CASE WHEN ?2 = 'running' THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END
+                 WHERE id = ?1 RETURNING *",
+                params![id, new_status],
+                session_row,
+            )
+            .optional()?
+            .ok_or(Error::NotFound("Session"))
+        })
+    }
+
+    pub fn set_cli_session_id(&self, id: Id, cli_session_id: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE sessions SET cli_session_id = ?2 WHERE id = ?1",
+                params![id, cli_session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// At app start no CLI process survives, so a session still marked
+    /// running was cut off. Returns how many were changed.
+    pub fn mark_running_sessions_interrupted(&self) -> Result<usize> {
+        self.with(|c| {
+            Ok(c.execute(
+                "UPDATE sessions SET status = ?1, ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE status = ?2",
+                params![status::INTERRUPTED, status::RUNNING],
+            )?)
+        })
+    }
+
+    // ---- events ----
+
+    /// Append an event; `seq` is the next number for this session.
+    pub fn append_event(
+        &self,
+        session_id: Id,
+        kind: &str,
+        payload: &serde_json::Value,
+    ) -> Result<Event> {
+        let json = serde_json::to_string(payload)
+            .map_err(|e| Error::Invalid(format!("event payload: {e}")))?;
+        self.with(|c| {
+            c.query_row(
+                "INSERT INTO events (session_id, seq, kind, payload_json)
+                 VALUES (?1, (SELECT coalesce(max(seq), -1) + 1 FROM events WHERE session_id = ?1), ?2, ?3)
+                 RETURNING *",
+                params![session_id, kind, json],
+                event_row,
+            )
+            .map_err(|e| fk_to_not_found(e, "Session"))
+        })
+    }
+
+    /// Events with `seq > after` (all when `after` is None), in order.
+    pub fn list_events(&self, session_id: Id, after: Option<i64>) -> Result<Vec<Event>> {
+        self.with(|c| {
+            let mut st =
+                c.prepare("SELECT * FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq")?;
+            let rows = st.query_map(params![session_id, after.unwrap_or(-1)], event_row)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     fn delete(&self, table: &'static str, what: &'static str, id: Id) -> Result<()> {
         self.with(|c| {
             let n = c.execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])?;
@@ -246,6 +319,20 @@ fn task_row(r: &Row) -> rusqlite::Result<Task> {
         github_issue: r.get("github_issue")?,
         created_at: r.get("created_at")?,
         updated_at: r.get("updated_at")?,
+    })
+}
+
+fn event_row(r: &Row) -> rusqlite::Result<Event> {
+    let json: String = r.get("payload_json")?;
+    Ok(Event {
+        id: r.get("id")?,
+        session_id: r.get("session_id")?,
+        seq: r.get("seq")?,
+        kind: r.get("kind")?,
+        payload: serde_json::from_str(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })?,
+        created_at: r.get("created_at")?,
     })
 }
 
@@ -332,6 +419,51 @@ mod tests {
         db.delete_project(p.id).unwrap();
         assert!(db.list_tasks(p.id).unwrap().is_empty());
         assert!(db.list_sessions(t2.id).unwrap().is_empty());
+    }
+
+    fn session(db: &Db) -> Session {
+        let p = db.create_project("p", "/r").unwrap();
+        let t = db.create_task(p.id, "t").unwrap();
+        db.create_session(t.id, AgentKind::Claude).unwrap()
+    }
+
+    #[test]
+    fn events_get_sequential_seq_per_session() {
+        let db = db();
+        let s = session(&db);
+        let a = db
+            .append_event(s.id, "user_prompt", &serde_json::json!({"text":"hi"}))
+            .unwrap();
+        let b = db
+            .append_event(s.id, "cli", &serde_json::json!({"type":"x"}))
+            .unwrap();
+        assert_eq!((a.seq, b.seq), (0, 1));
+        assert_eq!(
+            db.list_events(s.id, None).unwrap(),
+            vec![a.clone(), b.clone()]
+        );
+        assert_eq!(db.list_events(s.id, Some(0)).unwrap(), vec![b]);
+        assert_eq!(a.payload["text"], "hi");
+        assert!(matches!(
+            db.append_event(999, "x", &serde_json::json!({})),
+            Err(Error::NotFound("Session"))
+        ));
+    }
+
+    #[test]
+    fn status_timestamps_and_restart_recovery() {
+        let db = db();
+        let s = session(&db);
+        let r = db.set_session_status(s.id, status::RUNNING).unwrap();
+        assert!(r.started_at.is_some() && r.ended_at.is_none());
+        db.set_cli_session_id(s.id, "abc").unwrap();
+        assert_eq!(db.mark_running_sessions_interrupted().unwrap(), 1);
+        let after = db.get_session(s.id).unwrap();
+        assert_eq!(after.status, status::INTERRUPTED);
+        assert_eq!(after.cli_session_id.as_deref(), Some("abc"));
+        assert_eq!(after.started_at, r.started_at);
+        assert!(after.ended_at.is_some());
+        assert_eq!(db.mark_running_sessions_interrupted().unwrap(), 0);
     }
 
     #[test]

@@ -60,3 +60,27 @@ pub struct Session {
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
 }
+
+/// One stored event. `kind` is ours (user_prompt, cli, stderr, ...);
+/// `payload` is the CLI's JSON line for `cli` events.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Event {
+    pub id: Id,
+    pub session_id: Id,
+    pub seq: i64,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+pub mod status {
+    /// Waiting for the user (a process may or may not be alive).
+    pub const IDLE: &str = "idle";
+    /// A turn is in progress.
+    pub const RUNNING: &str = "running";
+    pub const COMPLETED: &str = "completed";
+    /// The CLI exited with an error during a turn.
+    pub const FAILED: &str = "failed";
+    /// A turn was cut off: stopped by the user, or the app quit mid-turn.
+    pub const INTERRUPTED: &str = "interrupted";
+}
