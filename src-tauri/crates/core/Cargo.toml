@@ -1,0 +1,11 @@
+[package]
+name = "hl-core"
+version = "0.1.0"
+edition = "2024"
+description = "Domain types, SQLite storage and migrations, shell environment"
+
+[dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

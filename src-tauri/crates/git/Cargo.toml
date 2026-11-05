@@ -1,0 +1,9 @@
+[package]
+name = "hl-git"
+version = "0.1.0"
+edition = "2024"
+description = "git CLI helpers: repo validation (worktrees and diffs come in M3)"
+
+[dependencies]
+hl-core = { path = "../core" }
+thiserror = { workspace = true }
