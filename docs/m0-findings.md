@@ -156,7 +156,7 @@ The fallback, if the flag ever disappears, is the MCP permission tool. Hooks are
 
 | Check | How | Result |
 |---|---|---|
-| `npm run tauri dev` builds and opens | Ran it; Vite served on :1420, `target/debug/humanlayer-local` process running | Built and launched. **Window not visually confirmed** (no screen access from the agent shell) |
+| `npm run tauri dev` builds and opens | Ran it; Vite served on :1420, `target/debug/humanlayer-local` process running | Pass: window opens; spike screen checked by hand by the user |
 | Claude round-trip through the Rust command | `cargo test -- --ignored e2e_claude_with_approval` (Tauri mock runtime, real CLI) | Pass: events streamed, approval answered, file written, exit 0 |
 | Codex round-trip through the Rust command | `cargo test -- --ignored e2e_codex` | Pass: `agent_message` "pong", exit 0 |
 | Non-JSON line, stderr, non-zero exit become events | `invalid_json_stderr_and_nonzero_exit_become_events` | Pass |
@@ -166,7 +166,7 @@ The fallback, if the flag ever disappears, is the MCP permission tool. Hooks are
 | `cargo clippy --all-targets -- -D warnings` | src-tauri | Clean |
 | `npm run build` | `tsc && vite build` | Pass |
 
-Not verified: clicking through the window UI by hand, and launching the bundled `.app` from Finder (the main reason for the shell-env code).
+The user clicked through the spike screen by hand and it worked. Not verified: launching the bundled `.app` from Finder (the main reason for the shell-env code).
 
 ## Changes suggested for PLAN.md
 

@@ -92,7 +92,7 @@ Paths are in the upstream `humanlayer` repo:
 Answers the risky questions first.
 
 - [x] Install prerequisites: Rust (rustup), Xcode command line tools (already present)
-- [ ] `npm run tauri dev` opens the scaffold window — builds and the app process launches; window not yet confirmed by eye
+- [x] `npm run tauri dev` opens the scaffold window (spike screen confirmed by hand)
 - [x] Rust command spawns `claude -p --output-format stream-json --input-format stream-json --verbose` and forwards each JSON line to the UI as a Tauri event (plus `--permission-mode default --permission-prompt-tool stdio`)
 - [x] Same for `codex exec --json`
 - [x] Decide the approval mechanism: Claude `--permission-prompt-tool` (an MCP tool served by the app) or hooks. Check current CLI flags first; they change between releases — decided: stdio control protocol (`--permission-prompt-tool stdio`), see docs/m0-findings.md
