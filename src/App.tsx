@@ -9,8 +9,22 @@ import {
   Plus,
   TerminalSquare,
   ArchiveRestore,
+  Pencil,
+  Play,
 } from "lucide-react";
-import { api, type Agent, type Project, type Session, type Task } from "@/lib/api";
+import {
+  api,
+  STAGE_SKILL,
+  type Agent,
+  type MoveResult,
+  type Project,
+  type Session,
+  type Stage,
+  type Task,
+} from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { Board } from "@/components/Board";
+import { TaskDocs } from "@/components/TaskDocs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +49,10 @@ export default function App() {
   const [openTasks, setOpenTasks] = useState<Set<number>>(new Set());
   const [sel, setSel] = useState<Selection>(null);
   const [error, setError] = useState<string | null>(null);
+  // Short message after a board move (session started, waiting, ...).
+  const [notice, setNotice] = useState<{ text: string; sessionId?: number } | null>(null);
+  // Bumped per task when its docs folder changes.
+  const [docsKey, setDocsKey] = useState<Record<number, number>>({});
 
   const fail = (e: unknown) => setError(String(e));
 
@@ -76,6 +94,22 @@ export default function App() {
     );
     return () => {
       un.then((f) => f());
+    };
+  }, []);
+
+  // Sessions started by the backend (stage moves, Iterate).
+  useEffect(() => {
+    const un1 = listen<Session>("session-created", ({ payload: s }) =>
+      setSessions((m) =>
+        m[s.task_id] && !m[s.task_id].some((x) => x.id === s.id) ? { ...m, [s.task_id]: [...m[s.task_id], s] } : m,
+      ),
+    );
+    const un2 = listen<number>("artifacts-updated", ({ payload: id }) =>
+      setDocsKey((m) => ({ ...m, [id]: (m[id] ?? 0) + 1 })),
+    );
+    return () => {
+      un1.then((f) => f());
+      un2.then((f) => f());
     };
   }, []);
 
@@ -144,6 +178,37 @@ export default function App() {
     } catch (e) {
       fail(e);
     }
+  }
+
+  async function moveTask(t: Task, stage: Stage, index: number) {
+    setNotice(null);
+    // Show the move at once; the reload below brings the real order.
+    setTasks((m) => ({
+      ...m,
+      [t.project_id]: (m[t.project_id] ?? []).map((x) => (x.id === t.id ? { ...x, stage, position: index - 0.5 } : x)),
+    }));
+    try {
+      showMove(await api.moveTask(t.id, stage, index));
+    } catch (e) {
+      fail(e);
+    }
+    await loadTasks(t.project_id);
+  }
+
+  function showMove(r: MoveResult) {
+    if (r.session) {
+      loadSessions(r.task.id);
+      setNotice({ text: `Started /rpi:${r.session.skill} on “${r.task.title}”.`, sessionId: r.session.id });
+    } else if (r.note) {
+      setNotice({ text: r.note });
+    }
+  }
+
+  function openSession(s: Session) {
+    loadSessions(s.task_id).then(() => {
+      expandTask(s.task_id, true);
+      setSel({ kind: "session", id: s.id });
+    });
   }
 
   async function removeProject(p: Project) {
@@ -216,7 +281,7 @@ export default function App() {
                           selected={isSel("session", s.id)}
                           onSelect={() => setSel({ kind: "session", id: s.id })}
                           icon={<TerminalSquare className="size-4" />}
-                          label={`${s.agent_kind} #${s.id}`}
+                          label={sessionLabel(s)}
                           status={s.status}
                         />
                       ))}
@@ -238,6 +303,30 @@ export default function App() {
           </div>
         )}
 
+        {notice && (
+          <div className="flex items-center justify-between gap-2 border border-accent bg-accent/10 p-2">
+            <span>{notice.text}</span>
+            <span className="flex flex-none gap-2">
+              {notice.sessionId && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    const s = allSessions.find((x) => x.id === notice.sessionId);
+                    if (s) openSession(s);
+                    setNotice(null);
+                  }}
+                >
+                  Open session
+                </Button>
+              )}
+              <button className="cursor-pointer" onClick={() => setNotice(null)}>
+                ×
+              </button>
+            </span>
+          </div>
+        )}
+
         {sel === null && (
           <div className="m-auto max-w-sm text-center text-muted-foreground">
             <p className="mb-3">Add a git repository as a project to get started.</p>
@@ -253,6 +342,7 @@ export default function App() {
             tasks={tasks[sel.id] ?? []}
             onAddTask={(title) => addTask(sel.id, title)}
             onOpenTask={(id) => setSel({ kind: "task", id })}
+            onMove={moveTask}
             onDelete={() => removeProject(project(sel.id)!)}
           />
         )}
@@ -266,6 +356,10 @@ export default function App() {
             onOpenSession={(id) => setSel({ kind: "session", id })}
             onDelete={() => removeTask(task(sel.id)!)}
             onArchived={() => setSel({ kind: "project", id: task(sel.id)!.project_id })}
+            docsKey={docsKey[sel.id] ?? 0}
+            onSessionStarted={openSession}
+            onStageResult={showMove}
+            onError={fail}
           />
         )}
 
@@ -356,6 +450,7 @@ function ProjectView(props: {
   tasks: Task[];
   onAddTask: (title: string) => Promise<void>;
   onOpenTask: (id: number) => void;
+  onMove: (t: Task, stage: Stage, index: number) => void;
   onDelete: () => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
@@ -394,20 +489,7 @@ function ProjectView(props: {
         </Button>
       </form>
       {err && <p className="text-destructive">{err}</p>}
-      <List
-        empty="No tasks yet."
-        items={active.map((t) => ({
-          id: t.id,
-          label: t.title,
-          meta: (
-            <span className="flex items-center gap-2">
-              {wtLabel(t) && <span className="text-muted-foreground">{wtLabel(t)}</span>}
-              <Badge variant="outline">{t.stage}</Badge>
-            </span>
-          ),
-        }))}
-        onOpen={props.onOpenTask}
-      />
+      <Board tasks={active} onMove={props.onMove} onOpen={props.onOpenTask} label={wtLabel} />
       {archived.length > 0 && (
         <>
           <button
@@ -445,9 +527,15 @@ function TaskView(props: {
   onOpenSession: (id: number) => void;
   onDelete: () => Promise<void>;
   onArchived: () => void;
+  docsKey: number;
+  onSessionStarted: (s: Session) => void;
+  onStageResult: (r: MoveResult) => void;
+  onError: (e: unknown) => void;
 }) {
   const t = props.task;
-  const [tab, setTab] = useState<"sessions" | "changes">("sessions");
+  const [tab, setTab] = useState<"sessions" | "docs" | "changes">("sessions");
+  const [editing, setEditing] = useState(false);
+  const skill = STAGE_SKILL[t.stage];
   const [err, setErr] = useState<string | null>(null);
   const hasWt = !!t.worktree_path && t.worktree_status !== "creating";
   // Refresh the diff whenever a session of this task changes status.
@@ -480,7 +568,19 @@ function TaskView(props: {
             </>
           ) : (
             <>
-              <Button size="sm" onClick={() => props.onAddSession("claude")}>
+              {skill && (
+                <Button
+                  size="sm"
+                  title={`Start a session with /rpi:${skill}`}
+                  onClick={() => api.startStageSession(t.id).then(props.onStageResult).catch(props.onError)}
+                >
+                  <Play /> {skill}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                <Pencil /> Edit
+              </Button>
+              <Button size="sm" variant={skill ? "outline" : "default"} onClick={() => props.onAddSession("claude")}>
                 <Plus /> Claude session
               </Button>
               <Button size="sm" variant="outline" onClick={() => props.onAddSession("codex")}>
@@ -501,9 +601,14 @@ function TaskView(props: {
         }
       />
       {err && <p className="text-destructive">{err}</p>}
+      {editing ? (
+        <EditTask task={t} onDone={() => setEditing(false)} />
+      ) : (
+        t.description && <p className="whitespace-pre-wrap text-muted-foreground">{t.description}</p>
+      )}
       <WorktreePanel task={t} repoPath={props.project?.repo_path} />
       <div className="flex gap-1 border-b">
-        {(["sessions", "changes"] as const).map((k) => (
+        {(["sessions", "docs", "changes"] as const).map((k) => (
           <button
             key={k}
             disabled={k === "changes" && !hasWt}
@@ -518,14 +623,16 @@ function TaskView(props: {
           </button>
         ))}
       </div>
-      {tab === "changes" && hasWt ? (
+      {tab === "docs" ? (
+        <TaskDocs taskId={t.id} slug={t.slug} refreshKey={props.docsKey} onSessionStarted={props.onSessionStarted} />
+      ) : tab === "changes" && hasWt ? (
         <DiffView taskId={t.id} refreshKey={sessionKey} />
       ) : (
         <List
           empty="No sessions yet."
           items={props.sessions.map((s) => ({
             id: s.id,
-            label: `${s.agent_kind} #${s.id}`,
+            label: sessionLabel(s),
             meta: (
               <span className="text-muted-foreground">
                 {s.status} · {new Date(s.created_at).toLocaleString()}
@@ -536,6 +643,45 @@ function TaskView(props: {
         />
       )}
     </>
+  );
+}
+
+function sessionLabel(s: Session): string {
+  return `${s.agent_kind} #${s.id}${s.skill ? ` · ${s.skill}` : ""}`;
+}
+
+function EditTask(props: { task: Task; onDone: () => void }) {
+  const [title, setTitle] = useState(props.task.title);
+  const [desc, setDesc] = useState(props.task.description);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <form
+      className="flex flex-col gap-2 border p-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        api
+          .updateTask(props.task.id, title, desc)
+          .then(props.onDone)
+          .catch((x) => setErr(String(x)));
+      }}
+    >
+      <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
+      <Textarea
+        rows={5}
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
+        placeholder="Description: what should be done and why. Research starts from the title and this text; it is also saved as task.md in the docs folder."
+      />
+      {err && <p className="text-destructive">{err}</p>}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="ghost" size="sm" onClick={props.onDone}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" disabled={!title.trim()}>
+          Save
+        </Button>
+      </div>
+    </form>
   );
 }
 

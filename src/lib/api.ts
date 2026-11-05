@@ -9,7 +9,10 @@ export type Task = {
   id: number;
   project_id: number;
   title: string;
-  stage: string;
+  description: string;
+  /** Names the docs folder (.humanlayer/tasks/<slug>) and the branch. */
+  slug: string;
+  stage: Stage;
   position: number;
   worktree_path: string | null;
   linear_issue_id: string | null;
@@ -23,6 +26,35 @@ export type Task = {
   worktree_log: string | null;
   archived_at: string | null;
 };
+
+export const STAGES = ["backlog", "research", "plan", "implement", "review", "done"] as const;
+export type Stage = (typeof STAGES)[number];
+/** Skill each stage starts (mirrors hl_core::model::stage::skill). */
+export const STAGE_SKILL: Partial<Record<Stage, string>> = {
+  research: "create-research",
+  plan: "create-plan",
+  implement: "implement-plan",
+  review: "describe-pr",
+};
+
+export type Artifact = {
+  id: number;
+  task_id: number;
+  kind: string;
+  path: string;
+  /** Seconds since the Unix epoch, as text. */
+  updated_at: string;
+};
+/** Mirrors rpi::iterate_skill. */
+export const ITERATE_SKILL: Record<string, string> = {
+  research: "iterate-research",
+  plan: "iterate-plan",
+  outline: "iterate-structure-outline",
+  research_questions: "iterate-research-questions",
+  design: "iterate-design-discussion",
+};
+
+export type MoveResult = { task: Task; session: Session | null; note: string | null };
 
 export type WorktreeStatus = "creating" | "setting_up" | "ready" | "setup_failed" | "failed";
 
@@ -108,8 +140,17 @@ export const api = {
   deleteProject: (id: number) => invoke<void>("delete_project", { id }),
 
   listTasks: (projectId: number) => invoke<Task[]>("list_tasks", { projectId }),
-  createTask: (projectId: number, title: string) =>
-    invoke<Task>("create_task", { projectId, title }),
+  createTask: (projectId: number, title: string, description = "") =>
+    invoke<Task>("create_task", { projectId, title, description }),
+  updateTask: (id: number, title: string, description: string) =>
+    invoke<Task>("update_task", { id, title, description }),
+  moveTask: (taskId: number, stage: Stage, index: number) =>
+    invoke<MoveResult>("move_task", { taskId, stage, index }),
+  startStageSession: (taskId: number) => invoke<MoveResult>("start_stage_session", { taskId }),
+  listArtifacts: (taskId: number) => invoke<Artifact[]>("list_artifacts", { taskId }),
+  readArtifact: (taskId: number, path: string) => invoke<string>("read_artifact", { taskId, path }),
+  iterateArtifact: (taskId: number, path: string, feedback: string) =>
+    invoke<Session>("iterate_artifact", { taskId, path, feedback }),
   deleteTask: (id: number, force = false) => invoke<void>("delete_task", { id, force }),
 
   createWorktree: (taskId: number) => invoke<Task>("create_worktree", { taskId }),

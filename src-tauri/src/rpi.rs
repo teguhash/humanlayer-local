@@ -48,8 +48,12 @@ pub fn prepare_fn(
         }
         let mut args = vec![];
         if let Some(p) = &plugin {
+            let p = p.to_string_lossy().into_owned();
             args.push("--plugin-dir".into());
-            args.push(p.to_string_lossy().into_owned());
+            args.push(p.clone());
+            // Skills read their own reference templates; don't prompt for that.
+            args.push("--add-dir".into());
+            args.push(p);
         }
         // Writes go through the link into app data; allow that folder.
         args.push("--add-dir".into());

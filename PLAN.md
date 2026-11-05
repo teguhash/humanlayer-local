@@ -129,12 +129,12 @@ Note: worktrees are created on request ("Create worktree" on the task), not on t
 
 ### M4: Board + RPI flow (weeks 8–10)
 
-- [ ] Board view with drag-and-drop between stages and ordering within a column
-- [ ] Moving into a stage starts a session with that stage's skill
-- [ ] Bundle the RPI skills; install them as a Claude plugin at app start
-- [ ] Watch the task's artifact folder; list research, plan and outline docs on the task
-- [ ] Markdown viewer for artifacts
-- [ ] Iterate buttons run `/iterate-research` and `/iterate-plan` with the user's feedback
+- [x] Board view with drag-and-drop between stages and ordering within a column (native HTML5 drag and drop, no library)
+- [x] Moving into a stage starts a session with that stage's skill (`/rpi:<skill>`; moving into Implement creates the worktree first and starts the session when it is ready)
+- [x] Bundle the RPI skills; install them as a Claude plugin at app start — loaded per session with `--plugin-dir` instead, so nothing is written to the user's Claude settings (docs/m4-findings.md)
+- [x] Watch the task's artifact folder; list research, plan and outline docs on the task (folder lives in app data, linked into each session folder as `.humanlayer/tasks/<slug>`)
+- [x] Markdown viewer for artifacts
+- [x] Iterate buttons run `/iterate-research` and `/iterate-plan` with the user's feedback (also outline, research questions, design discussion)
 
 ### M5: Codex adapter (weeks 10–11)
 
