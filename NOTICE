@@ -1,0 +1,13 @@
+HumanLayer Local
+
+Parts of this project are derived from HumanLayer
+(https://github.com/humanlayer/humanlayer),
+Copyright 2025-2026 QueryTale, Inc. d/b/a HumanLayer,
+licensed under the Apache License, Version 2.0 (see licenses/humanlayer-LICENSE).
+
+Derived files:
+  src/components/ui/*.tsx   copied from packages/ui/src/components (import paths changed)
+  src/lib/utils.ts          copied from packages/ui/src/lib/utils.ts
+  src/styles/globals.css    trimmed from packages/ui/src/styles/globals.css
+  src-tauri/crates/core/src/shell_env.rs
+                            idea ported from apps/riptide-native/src/shell_env.rs

@@ -1,0 +1,143 @@
+/* Trimmed from upstream humanlayer packages/ui/src/styles/globals.css
+   (Apache-2.0). Kept: the theme-token mapping and the Rosé Pine themes.
+   No web-font import: the app works offline and falls back to local monos. */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+	--radius-sm: 0px;
+	--radius-md: 0px;
+	--radius-lg: 0px;
+	--radius-xl: 0px;
+	/* Keep the font-mono utility on the app's body face instead of Tailwind's default stack. */
+	--font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, 'Consolas', 'Monaco', 'Courier New', monospace;
+	--color-background: var(--terminal-bg);
+	--color-foreground: var(--terminal-fg);
+	--color-card: var(--terminal-bg);
+	--color-card-foreground: var(--terminal-fg);
+	--color-popover: var(--terminal-bg);
+	--color-popover-foreground: var(--terminal-fg);
+	--color-primary: var(--terminal-accent);
+	--color-primary-foreground: var(--terminal-bg);
+	--color-secondary: var(--terminal-bg-alt);
+	--color-secondary-foreground: var(--terminal-fg);
+	--color-muted: var(--terminal-bg-alt);
+	/* Fallback to plain fg: generated vscode themes historically shipped
+	   without --terminal-fg-dim, which left this var unresolvable — CSS text
+	   degraded to inherit but JS-read fills (chart labels) rendered black. */
+	--color-muted-foreground: var(--terminal-fg-dim, var(--terminal-fg));
+	--color-accent: var(--terminal-accent);
+	--color-accent-foreground: var(--terminal-bg);
+	--color-accent-alt: var(--terminal-accent-alt);
+	--color-destructive: var(--terminal-error);
+	--color-border: var(--terminal-border);
+	--color-input: var(--terminal-border);
+	--color-ring: var(--terminal-accent);
+	--color-sidebar: var(--terminal-bg);
+	--color-sidebar-foreground: var(--terminal-fg);
+	--color-sidebar-primary: var(--terminal-accent);
+	--color-sidebar-primary-foreground: var(--terminal-bg);
+	--color-sidebar-accent: var(--terminal-bg-alt);
+	--color-sidebar-accent-foreground: var(--terminal-fg);
+	--color-sidebar-border: var(--terminal-border);
+	--color-sidebar-ring: var(--terminal-accent);
+}
+
+:root:not([data-theme]),
+[data-theme="rose-pine"] {
+	--terminal-bg: #191724;
+	--terminal-bg-alt: #1f1d2e;
+	--terminal-fg: #e0def4;
+	--terminal-fg-dim: #908caa;
+	--terminal-accent: #c4a7e7;
+	--terminal-accent-dim: rgba(196, 167, 231, 0.3);
+	--terminal-accent-alt: #ebbcba;
+	--terminal-border: #6e6a86;
+	--terminal-success: #9ccfd8;
+	--terminal-warning: #f6c177;
+	--terminal-error: #eb6f92;
+	--terminal-selection: #6e6a8633;
+
+	/* Standard colors - Official Rosé Pine values */
+	--terminal-color-0: #191724; /* Black (base) */
+	--terminal-color-1: #eb6f92; /* Red (love) */
+	--terminal-color-2: #9ccfd8; /* Green (foam) */
+	--terminal-color-3: #f6c177; /* Yellow (gold) */
+	--terminal-color-4: #3e8fb0; /* Blue (pine) */
+	--terminal-color-5: #c4a7e7; /* Magenta (iris) */
+	--terminal-color-6: #ebbcba; /* Cyan (rose) */
+	--terminal-color-7: #e0def4; /* White (text) */
+
+	/* Bright colors - Official Rosé Pine values */
+	--terminal-color-8: #26233a; /* Bright Black (overlay) */
+	--terminal-color-9: #eb6f92; /* Bright Red (love) */
+	--terminal-color-10: #9ccfd8; /* Bright Green (foam) */
+	--terminal-color-11: #f6c177; /* Bright Yellow (gold) */
+	--terminal-color-12: #31748f; /* Bright Blue (pine dark) */
+	--terminal-color-13: #c4a7e7; /* Bright Magenta (iris) */
+	--terminal-color-14: #ebbcba; /* Bright Cyan (rose) */
+	--terminal-color-15: #e0def4; /* Bright White (text) */
+}
+
+/* Rosé Pine Dawn - Light theme with warm tones */
+[data-theme="rose-pine-dawn"] {
+	--terminal-bg: #faf4ed;
+	--terminal-bg-alt: #fffaf3;
+	--terminal-fg: #575279;
+	--terminal-fg-dim: #797593;
+	--terminal-accent: #907aa9;
+	--terminal-accent-dim: rgba(144, 122, 169, 0.3);
+	--terminal-accent-alt: #d7827e;
+	--terminal-border: #cecacd;
+	--terminal-success: #56949f;
+	--terminal-warning: #ea9d34;
+	--terminal-error: #b4637a;
+	--terminal-selection: #6e6a8633;
+
+	/* Standard colors - Official Rosé Pine Dawn values */
+	--terminal-color-0: #faf4ed; /* Black (base) */
+	--terminal-color-1: #b4637a; /* Red (love) */
+	--terminal-color-2: #56949f; /* Green (foam) */
+	--terminal-color-3: #ea9d34; /* Yellow (gold) */
+	--terminal-color-4: #286983; /* Blue (pine) */
+	--terminal-color-5: #907aa9; /* Magenta (iris) */
+	--terminal-color-6: #d7827e; /* Cyan (rose) */
+	--terminal-color-7: #575279; /* White (text) */
+
+	/* Bright colors - Official Rosé Pine Dawn values */
+	--terminal-color-8: #f2e9e1; /* Bright Black (surface) */
+	--terminal-color-9: #b4637a; /* Bright Red (love) */
+	--terminal-color-10: #56949f; /* Bright Green (foam) */
+	--terminal-color-11: #ea9d34; /* Bright Yellow (gold) */
+	--terminal-color-12: #286983; /* Bright Blue (pine) */
+	--terminal-color-13: #907aa9; /* Bright Magenta (iris) */
+	--terminal-color-14: #d7827e; /* Bright Cyan (rose) */
+	--terminal-color-15: #575279; /* Bright White (text) */
+}
+
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+
+	html,
+	body,
+	#root {
+		height: 100%;
+	}
+
+	body {
+		@apply bg-background text-foreground;
+		margin: 0;
+		font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+		font-size: 13px;
+		-webkit-font-smoothing: antialiased;
+	}
+
+	::selection {
+		background-color: var(--terminal-selection);
+	}
+}

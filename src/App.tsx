@@ -1,223 +1,450 @@
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import "./App.css";
+import { useCallback, useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+  ChevronDown,
+  ChevronRight,
+  FolderGit2,
+  FolderPlus,
+  ListTodo,
+  Plus,
+  TerminalSquare,
 
-type Agent = "claude" | "codex";
+} from "lucide-react";
+import { api, type Agent, type Project, type Session, type Task } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ConfirmDelete } from "@/components/ConfirmDelete";
+import { Runner } from "@/components/Runner";
+import { cn } from "@/lib/utils";
 
-type AgentEvent = {
-  session_id: string;
-  seq: number;
-  kind: "started" | "event" | "invalid_json" | "stderr" | "exit" | "error";
-  event_type: string | null;
-  payload: any;
-};
-
-type Row = AgentEvent & { key: string; agent: Agent };
-
-const MAX_ROWS = 2000;
-const APPROVAL_TYPE = "control_request/can_use_tool";
-
-function rowLabel(r: Row): string {
-  if (r.kind === "event") return r.event_type ?? "(no type)";
-  if (r.kind === "exit") {
-    const p = r.payload;
-    if (p.stopped) return "exit (stopped)";
-    return p.success ? "exit 0" : `exit ${p.code ?? "signal"}`;
-  }
-  return r.kind;
-}
-
-function rowClass(r: Row): string {
-  if (r.kind === "error" || r.kind === "invalid_json") return "row bad";
-  if (r.kind === "exit" && !r.payload.success && !r.payload.stopped) return "row bad";
-  if (r.kind === "stderr") return "row warn";
-  if (r.event_type === APPROVAL_TYPE) return "row ask";
-  return "row";
-}
-
-function preview(r: Row): string {
-  const p = r.payload;
-  if (r.kind === "stderr" || r.kind === "invalid_json") return p.line;
-  if (r.kind === "error") return p.message;
-  if (r.kind === "started") return `${p.binary} ${p.args.join(" ")}`;
-  if (r.event_type === APPROVAL_TYPE)
-    return `${p.request.tool_name}: ${JSON.stringify(p.request.input)}`;
-  // Claude assistant text / Codex agent_message text, when present.
-  const text =
-    p?.message?.content?.find?.((c: any) => c.type === "text")?.text ??
-    p?.item?.text ??
-    p?.result;
-  const s = typeof text === "string" ? text : JSON.stringify(p);
-  return s.length > 200 ? s.slice(0, 200) + "…" : s;
-}
+type Selection =
+  | { kind: "project"; id: number }
+  | { kind: "task"; id: number }
+  | { kind: "session"; id: number }
+  | null;
 
 export default function App() {
-  const [agent, setAgent] = useState<Agent>("claude");
-  const [cwd, setCwd] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [rows, setRows] = useState<Row[]>([]);
-  const [running, setRunning] = useState<Record<string, Agent>>({});
-  const [answered, setAnswered] = useState<Record<string, "allowed" | "denied">>({});
-  const [startError, setStartError] = useState<string | null>(null);
-  const [clock, setClock] = useState(() => new Date());
-  const agentOf = useRef<Record<string, Agent>>({});
-  const listRef = useRef<HTMLDivElement>(null);
-  const stickToBottom = useRef(true);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [tasks, setTasks] = useState<Record<number, Task[]>>({});
+  const [sessions, setSessions] = useState<Record<number, Session[]>>({});
+  const [openProjects, setOpenProjects] = useState<Set<number>>(new Set());
+  const [openTasks, setOpenTasks] = useState<Set<number>>(new Set());
+  const [sel, setSel] = useState<Selection>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Ticking clock: a visible check that the UI thread stays responsive.
-  useEffect(() => {
-    const t = setInterval(() => setClock(new Date()), 250);
-    return () => clearInterval(t);
-  }, []);
+  const fail = (e: unknown) => setError(String(e));
 
-  useEffect(() => {
-    const un = listen<AgentEvent>("agent-event", ({ payload: ev }) => {
-      const a = agentOf.current[ev.session_id] ?? (ev.payload?.agent as Agent) ?? "claude";
-      agentOf.current[ev.session_id] = a;
-      setRows((prev) => {
-        const next = [...prev, { ...ev, agent: a, key: `${ev.session_id}-${ev.seq}` }];
-        return next.length > MAX_ROWS ? next.slice(-MAX_ROWS) : next;
-      });
-      if (ev.kind === "exit")
-        setRunning(({ [ev.session_id]: _, ...rest }) => rest);
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
+  const loadProjects = useCallback(() => api.listProjects().then(setProjects).catch(fail), []);
+  const loadTasks = useCallback(
+    (projectId: number) =>
+      api
+        .listTasks(projectId)
+        .then((t) => setTasks((m) => ({ ...m, [projectId]: t })))
+        .catch(fail),
+    [],
+  );
+  const loadSessions = useCallback(
+    (taskId: number) =>
+      api
+        .listSessions(taskId)
+        .then((s) => setSessions((m) => ({ ...m, [taskId]: s })))
+        .catch(fail),
+    [],
+  );
 
   useEffect(() => {
-    const el = listRef.current;
-    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [rows]);
+    loadProjects();
+  }, [loadProjects]);
 
-  async function send() {
-    setStartError(null);
+  const allTasks = Object.values(tasks).flat();
+  const allSessions = Object.values(sessions).flat();
+  const project = (id: number) => projects.find((p) => p.id === id);
+  const task = (id: number) => allTasks.find((t) => t.id === id);
+  const session = (id: number) => allSessions.find((s) => s.id === id);
+
+  function toggle(set: Set<number>, id: number): Set<number> {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  }
+
+  function expandProject(id: number, force = false) {
+    if (!openProjects.has(id) || force) loadTasks(id);
+    setOpenProjects((s) => (force ? new Set(s).add(id) : toggle(s, id)));
+  }
+
+  function expandTask(id: number, force = false) {
+    if (!openTasks.has(id) || force) loadSessions(id);
+    setOpenTasks((s) => (force ? new Set(s).add(id) : toggle(s, id)));
+  }
+
+  async function addProject() {
+    setError(null);
+    const picked = await open({ directory: true, multiple: false, title: "Choose a git repository" });
+    if (typeof picked !== "string") return;
     try {
-      const id = await invoke<string>("start_session", { agent, cwd, prompt });
-      agentOf.current[id] = agent;
-      setRunning((r) => ({ ...r, [id]: agent }));
+      const p = await api.createProject(picked);
+      await loadProjects();
+      expandProject(p.id, true);
+      setSel({ kind: "project", id: p.id });
     } catch (e) {
-      setStartError(String(e));
+      fail(e);
     }
   }
 
-  async function answer(r: Row, allow: boolean) {
+  async function addTask(projectId: number, title: string) {
+    const t = await api.createTask(projectId, title);
+    await loadTasks(projectId);
+    expandProject(projectId, true);
+    setSel({ kind: "task", id: t.id });
+  }
+
+  async function addSession(taskId: number, agent: Agent) {
     try {
-      await invoke("respond_approval", {
-        sessionId: r.session_id,
-        requestId: r.payload.request_id,
-        allow,
-        input: r.payload.request.input,
-      });
-      setAnswered((a) => ({ ...a, [r.key]: allow ? "allowed" : "denied" }));
+      const s = await api.createSession(taskId, agent);
+      await loadSessions(taskId);
+      expandTask(taskId, true);
+      setSel({ kind: "session", id: s.id });
     } catch (e) {
-      setStartError(String(e));
+      fail(e);
     }
   }
 
-  async function stop(id: string) {
-    try {
-      await invoke("stop_session", { sessionId: id });
-    } catch (e) {
-      setStartError(String(e));
-    }
+  async function removeProject(p: Project) {
+    await api.deleteProject(p.id);
+    setTasks(({ [p.id]: _, ...rest }) => rest);
+    if (sel) setSel(null);
+    await loadProjects();
   }
+
+  async function removeTask(t: Task) {
+    await api.deleteTask(t.id);
+    setSessions(({ [t.id]: _, ...rest }) => rest);
+    setSel({ kind: "project", id: t.project_id });
+    await loadTasks(t.project_id);
+  }
+
+  async function removeSession(s: Session) {
+    await api.deleteSession(s.id);
+    setSel({ kind: "task", id: s.task_id });
+    await loadSessions(s.task_id);
+  }
+
+  const isSel = (kind: string, id: number) => sel?.kind === kind && sel.id === id;
 
   return (
-    <main className="spike">
-      <header>
-        <strong>HumanLayer Local · M0 spike</strong>
-        <span className="clock" title="Updates 4×/s; if it freezes, the UI is blocked">
-          {clock.toLocaleTimeString()}.{String(clock.getMilliseconds()).padStart(3, "0").slice(0, 1)}
-        </span>
-      </header>
+    <div className="flex h-full">
+      {/* ---- sidebar ---- */}
+      <aside className="flex w-72 flex-none flex-col border-r bg-secondary/30">
+        <div className="flex items-center justify-between border-b px-3 py-2">
+          <span className="font-semibold tracking-wider uppercase">Projects</span>
+          <Button size="xs" variant="ghost" onClick={addProject} title="Add a git repository">
+            <FolderPlus /> Add
+          </Button>
+        </div>
+        <nav className="flex-1 overflow-auto py-1">
+          {projects.length === 0 && (
+            <p className="px-3 py-2 text-muted-foreground">No projects yet.</p>
+          )}
+          {projects.map((p) => (
+            <div key={p.id}>
+              <TreeRow
+                depth={0}
+                open={openProjects.has(p.id)}
+                onToggle={() => expandProject(p.id)}
+                selected={isSel("project", p.id)}
+                onSelect={() => setSel({ kind: "project", id: p.id })}
+                icon={<FolderGit2 className="size-4" />}
+                label={p.name}
+              />
+              {openProjects.has(p.id) &&
+                (tasks[p.id] ?? []).map((t) => (
+                  <div key={t.id}>
+                    <TreeRow
+                      depth={1}
+                      open={openTasks.has(t.id)}
+                      onToggle={() => expandTask(t.id)}
+                      selected={isSel("task", t.id)}
+                      onSelect={() => setSel({ kind: "task", id: t.id })}
+                      icon={<ListTodo className="size-4" />}
+                      label={t.title}
+                    />
+                    {openTasks.has(t.id) &&
+                      (sessions[t.id] ?? []).map((s) => (
+                        <TreeRow
+                          key={s.id}
+                          depth={2}
+                          selected={isSel("session", s.id)}
+                          onSelect={() => setSel({ kind: "session", id: s.id })}
+                          icon={<TerminalSquare className="size-4" />}
+                          label={`${s.agent_kind} #${s.id}`}
+                        />
+                      ))}
+                  </div>
+                ))}
+            </div>
+          ))}
+        </nav>
+      </aside>
 
+      {/* ---- main ---- */}
+      <main className="flex min-w-0 flex-1 flex-col gap-3 p-4">
+        {error && (
+          <div className="flex items-start justify-between gap-2 border border-destructive bg-destructive/10 p-2 text-destructive">
+            <span className="whitespace-pre-wrap">{error}</span>
+            <button className="cursor-pointer" onClick={() => setError(null)}>
+              ×
+            </button>
+          </div>
+        )}
+
+        {sel === null && (
+          <div className="m-auto max-w-sm text-center text-muted-foreground">
+            <p className="mb-3">Add a git repository as a project to get started.</p>
+            <Button onClick={addProject}>
+              <FolderPlus /> Add project
+            </Button>
+          </div>
+        )}
+
+        {sel?.kind === "project" && project(sel.id) && (
+          <ProjectView
+            project={project(sel.id)!}
+            tasks={tasks[sel.id] ?? []}
+            onAddTask={(title) => addTask(sel.id, title)}
+            onOpenTask={(id) => setSel({ kind: "task", id })}
+            onDelete={() => removeProject(project(sel.id)!)}
+          />
+        )}
+
+        {sel?.kind === "task" && task(sel.id) && (
+          <TaskView
+            task={task(sel.id)!}
+            project={project(task(sel.id)!.project_id)}
+            sessions={sessions[sel.id] ?? []}
+            onAddSession={(a) => addSession(sel.id, a)}
+            onOpenSession={(id) => setSel({ kind: "session", id })}
+            onDelete={() => removeTask(task(sel.id)!)}
+          />
+        )}
+
+        {sel?.kind === "session" &&
+          session(sel.id) &&
+          (() => {
+            const s = session(sel.id)!;
+            const t = task(s.task_id);
+            const p = t && project(t.project_id);
+            const cwd = t?.worktree_path ?? p?.repo_path;
+            return (
+              <SessionView key={s.id} session={s} task={t} cwd={cwd} onDelete={() => removeSession(s)} />
+            );
+          })()}
+      </main>
+    </div>
+  );
+}
+
+function TreeRow(props: {
+  depth: number;
+  open?: boolean;
+  onToggle?: () => void;
+  selected: boolean;
+  onSelect: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex cursor-pointer items-center gap-1 py-1 pr-2 hover:bg-accent/10",
+        props.selected && "bg-accent/20 text-accent",
+      )}
+      style={{ paddingLeft: 8 + props.depth * 16 }}
+      onClick={props.onSelect}
+    >
+      {props.onToggle ? (
+        <button
+          className="flex size-4 cursor-pointer items-center justify-center text-muted-foreground"
+          aria-label={props.open ? "Collapse" : "Expand"}
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onToggle!();
+          }}
+        >
+          {props.open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </button>
+      ) : (
+        <span className="size-4" />
+      )}
+      {props.icon}
+      <span className="truncate">{props.label}</span>
+    </div>
+  );
+}
+
+function Header(props: { title: string; sub?: React.ReactNode; actions?: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3 border-b pb-3">
+      <div className="min-w-0">
+        <h1 className="truncate text-lg font-semibold">{props.title}</h1>
+        {props.sub && <div className="truncate text-muted-foreground">{props.sub}</div>}
+      </div>
+      <div className="flex flex-none gap-2">{props.actions}</div>
+    </div>
+  );
+}
+
+function ProjectView(props: {
+  project: Project;
+  tasks: Task[];
+  onAddTask: (title: string) => Promise<void>;
+  onOpenTask: (id: number) => void;
+  onDelete: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const p = props.project;
+  return (
+    <>
+      <Header
+        title={p.name}
+        sub={p.repo_path}
+        actions={
+          <ConfirmDelete
+            what={`project “${p.name}”`}
+            detail="This deletes its tasks and sessions from HumanLayer Local. The repository on disk is not touched."
+            onConfirm={props.onDelete}
+          />
+        }
+      />
       <form
-        className="controls"
+        className="flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          send();
+          setErr(null);
+          props
+            .onAddTask(title)
+            .then(() => setTitle(""))
+            .catch((e) => setErr(String(e)));
         }}
       >
-        <select value={agent} onChange={(e) => setAgent(e.target.value as Agent)}>
-          <option value="claude">claude</option>
-          <option value="codex">codex</option>
-        </select>
-        <input
-          className="cwd"
-          placeholder="/path/to/working/folder"
-          value={cwd}
-          onChange={(e) => setCwd(e.target.value)}
-        />
-        <textarea
-          placeholder="Prompt"
-          value={prompt}
-          rows={3}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              send();
-            }
-          }}
-        />
-        <div className="actions">
-          <button type="submit" disabled={!cwd || !prompt.trim()}>
-            Send (⌘↵)
-          </button>
-          {Object.entries(running).map(([id, a]) => (
-            <button type="button" key={id} className="stop" onClick={() => stop(id)}>
-              Stop {a} {id}
-            </button>
-          ))}
-          <button type="button" className="clear" onClick={() => setRows([])}>
-            Clear
-          </button>
-        </div>
-        {startError && <div className="start-error">{startError}</div>}
+        <Input placeholder="New task title" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Button type="submit" disabled={!title.trim()}>
+          <Plus /> Task
+        </Button>
       </form>
+      {err && <p className="text-destructive">{err}</p>}
+      <List
+        empty="No tasks yet."
+        items={props.tasks.map((t) => ({
+          id: t.id,
+          label: t.title,
+          meta: <Badge variant="outline">{t.stage}</Badge>,
+        }))}
+        onOpen={props.onOpenTask}
+      />
+    </>
+  );
+}
 
-      <div
-        className="events"
-        ref={listRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-        }}
-      >
-        {rows.length === 0 && <div className="empty">No events yet.</div>}
-        {rows.map((r) => (
-          <div key={r.key} className={rowClass(r)}>
-            <details>
-              <summary>
-                <span className="sid">
-                  {r.agent} {r.session_id}#{r.seq}
-                </span>
-                <span className="type">{rowLabel(r)}</span>
-                <span className="preview">{preview(r)}</span>
-              </summary>
-              <pre>{JSON.stringify(r.payload, null, 2)}</pre>
-            </details>
-            {r.event_type === APPROVAL_TYPE && (
-              <div className="approval">
-                {answered[r.key] ? (
-                  <em>{answered[r.key]}</em>
-                ) : running[r.session_id] ? (
-                  <>
-                    <span>Approve {r.payload.request.tool_name}?</span>
-                    <button onClick={() => answer(r, true)}>Allow</button>
-                    <button onClick={() => answer(r, false)}>Deny</button>
-                  </>
-                ) : (
-                  <em>session ended</em>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </main>
+function TaskView(props: {
+  task: Task;
+  project?: Project;
+  sessions: Session[];
+  onAddSession: (agent: Agent) => void;
+  onOpenSession: (id: number) => void;
+  onDelete: () => Promise<void>;
+}) {
+  const t = props.task;
+  return (
+    <>
+      <Header
+        title={t.title}
+        sub={
+          <>
+            {props.project?.name} · <Badge variant="outline">{t.stage}</Badge>
+          </>
+        }
+        actions={
+          <>
+            <Button size="sm" onClick={() => props.onAddSession("claude")}>
+              <Plus /> Claude session
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => props.onAddSession("codex")}>
+              <Plus /> Codex session
+            </Button>
+            <ConfirmDelete
+              what={`task “${t.title}”`}
+              detail="This deletes its sessions too."
+              onConfirm={props.onDelete}
+            />
+          </>
+        }
+      />
+      <List
+        empty="No sessions yet."
+        items={props.sessions.map((s) => ({
+          id: s.id,
+          label: `${s.agent_kind} #${s.id}`,
+          meta: (
+            <span className="text-muted-foreground">
+              {s.status} · {new Date(s.created_at).toLocaleString()}
+            </span>
+          ),
+        }))}
+        onOpen={props.onOpenSession}
+      />
+    </>
+  );
+}
+
+function SessionView(props: {
+  session: Session;
+  task?: Task;
+  cwd?: string;
+  onDelete: () => Promise<void>;
+}) {
+  const s = props.session;
+  return (
+    <>
+      <Header
+        title={`${s.agent_kind} session #${s.id}`}
+        sub={
+          <>
+            {props.task?.title} · {s.status} · {props.cwd}
+          </>
+        }
+        actions={<ConfirmDelete what={`session #${s.id}`} onConfirm={props.onDelete} />}
+      />
+      {props.cwd ? (
+        <Runner agent={s.agent_kind} cwd={props.cwd} />
+      ) : (
+        <p className="text-muted-foreground">No working folder for this session.</p>
+      )}
+    </>
+  );
+}
+
+function List(props: {
+  empty: string;
+  items: { id: number; label: string; meta?: React.ReactNode }[];
+  onOpen: (id: number) => void;
+}) {
+  if (props.items.length === 0) return <p className="text-muted-foreground">{props.empty}</p>;
+  return (
+    <ul className="divide-y border">
+      {props.items.map((i) => (
+        <li
+          key={i.id}
+          className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2 hover:bg-accent/10"
+          onClick={() => props.onOpen(i.id)}
+        >
+          <span className="truncate">{i.label}</span>
+          {i.meta}
+        </li>
+      ))}
+    </ul>
   );
 }
