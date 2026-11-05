@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Settings } from "@/components/Settings";
+import { PullRequestPanel, prLabel } from "@/components/PullRequest";
 import {
   api,
   STAGE_SKILL,
@@ -25,6 +26,8 @@ import {
   type Agent,
   type MoveResult,
   type Notice,
+  type PullRequest,
+  isGithubRef,
   type Project,
   type Session,
   type Stage,
@@ -54,6 +57,8 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Record<number, Task[]>>({});
   const [sessions, setSessions] = useState<Record<number, Session[]>>({});
+  // Task id -> its newest PR.
+  const [prs, setPrs] = useState<Record<number, PullRequest>>({});
   const [openProjects, setOpenProjects] = useState<Set<number>>(new Set());
   const [openTasks, setOpenTasks] = useState<Set<number>>(new Set());
   const [sel, setSel] = useState<Selection>(null);
@@ -68,9 +73,16 @@ export default function App() {
   const loadProjects = useCallback(() => api.listProjects().then(setProjects).catch(fail), []);
   const loadTasks = useCallback(
     (projectId: number) =>
-      api
-        .listTasks(projectId)
-        .then((t) => setTasks((m) => ({ ...m, [projectId]: t })))
+      Promise.all([api.listTasks(projectId), api.listProjectPrs(projectId)])
+        .then(([t, ps]) => {
+          setTasks((m) => ({ ...m, [projectId]: t }));
+          setPrs((m) => {
+            const next = { ...m };
+            // Newest first: keep the first PR seen per task.
+            for (const p of [...ps].reverse()) next[p.task_id] = p;
+            return next;
+          });
+        })
         .catch(fail),
     [],
   );
@@ -119,6 +131,16 @@ export default function App() {
     return () => {
       un1.then((f) => f());
       un2.then((f) => f());
+    };
+  }, []);
+
+  // PRs opened, polled or merged.
+  useEffect(() => {
+    const un = listen<PullRequest>("pr-updated", ({ payload: p }) =>
+      setPrs((m) => (m[p.task_id] && m[p.task_id].id > p.id ? m : { ...m, [p.task_id]: p })),
+    );
+    return () => {
+      un.then((f) => f());
     };
   }, []);
 
@@ -372,8 +394,12 @@ export default function App() {
             project={project(sel.id)!}
             tasks={tasks[sel.id] ?? []}
             onAddTask={(title) => addTask(sel.id, title)}
+            prs={prs}
             onImport={(ref) =>
-              api.importLinearTicket(sel.id, ref).then(async (r) => {
+              (isGithubRef(ref)
+                ? api.importGithubIssue(sel.id, ref).then((task) => ({ task, note: null as string | null }))
+                : api.importLinearTicket(sel.id, ref)
+              ).then(async (r) => {
                 await loadTasks(sel.id);
                 if (r.note) setNotice({ text: r.note });
                 setSel({ kind: "task", id: r.task.id });
@@ -391,6 +417,7 @@ export default function App() {
           <TaskView
             task={task(sel.id)!}
             project={project(task(sel.id)!.project_id)}
+            pr={prs[sel.id]}
             sessions={sessions[sel.id] ?? []}
             onAddSession={(a) => addSession(sel.id, a)}
             onOpenSession={(id) => setSel({ kind: "session", id })}
@@ -490,6 +517,7 @@ function ProjectView(props: {
   tasks: Task[];
   onAddTask: (title: string) => Promise<void>;
   onImport: (reference: string) => Promise<void>;
+  prs: Record<number, PullRequest>;
   onOpenTask: (id: number) => void;
   onMove: (t: Task, stage: Stage, index: number) => void;
   onDelete: () => Promise<void>;
@@ -559,7 +587,7 @@ function ProjectView(props: {
         }}
       >
         <Input
-          placeholder="Linear ticket ID or URL (ENG-123)"
+          placeholder="Import: Linear ticket (ENG-123), GitHub issue (#12, owner/repo#12) or a URL"
           value={ticket}
           onChange={(e) => setTicket(e.target.value)}
         />
@@ -575,6 +603,8 @@ function ProjectView(props: {
         label={(t) =>
           [
             t.linear_issue_id ? `${t.linear_issue_id}${t.linear_state ? ` · ${t.linear_state}` : ""}` : "",
+            t.github_issue ? `#${t.github_issue.split("#")[1]}` : "",
+            props.prs[t.id] ? prLabel(props.prs[t.id]) : "",
             t.agent && t.agent !== p.default_agent ? AGENT_LABEL[t.agent] : "",
             wtLabel(t),
           ]
@@ -614,6 +644,7 @@ function ProjectView(props: {
 function TaskView(props: {
   task: Task;
   project?: Project;
+  pr?: PullRequest;
   sessions: Session[];
   onAddSession: (agent: Agent) => void;
   onOpenSession: (id: number) => void;
@@ -641,6 +672,19 @@ function TaskView(props: {
         sub={
           <>
             {props.project?.name} · <Badge variant="outline">{t.stage}</Badge>
+            {t.github_issue && (
+              <>
+                {" "}
+                ·{" "}
+                <button
+                  className="inline-flex cursor-pointer items-center gap-1 underline-offset-2 hover:underline"
+                  title="Open the issue on GitHub"
+                  onClick={() => t.github_issue_url && openUrl(t.github_issue_url).catch(props.onError)}
+                >
+                  {t.github_issue} <ExternalLink className="size-3" />
+                </button>
+              </>
+            )}
             {t.linear_issue_id && (
               <>
                 {" "}
@@ -726,6 +770,7 @@ function TaskView(props: {
         t.description && <p className="whitespace-pre-wrap text-muted-foreground">{t.description}</p>
       )}
       <WorktreePanel task={t} repoPath={props.project?.repo_path} />
+      <PullRequestPanel task={t} pr={props.pr} onError={props.onError} />
       <div className="flex gap-1 border-b">
         {(["sessions", "docs", "changes"] as const).map((k) => (
           <button

@@ -28,9 +28,11 @@ export type Task = {
   stage: Stage;
   position: number;
   worktree_path: string | null;
+  /** GitHub issue "owner/repo#12" when imported from one. */
+  github_issue: string | null;
+  github_issue_url: string | null;
   /** Linear ticket identifier (e.g. ENG-123) when linked. */
   linear_issue_id: string | null;
-  github_issue: string | null;
   created_at: string;
   updated_at: string;
   branch: string | null;
@@ -80,6 +82,38 @@ export type LinearStatus = {
   last_poll: string | null;
   last_error: string | null;
 };
+export type GithubStatus = {
+  gh_installed: boolean;
+  login: string | null;
+  /** Where gh got the credential: "keyring", "GH_TOKEN", ... */
+  source: string | null;
+  has_token: boolean;
+  error: string | null;
+};
+
+// Mirrors hl_core::model::PullRequest.
+export type PullRequest = {
+  id: number;
+  task_id: number;
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  state: "OPEN" | "CLOSED" | "MERGED" | "";
+  is_draft: boolean;
+  mergeable: string;
+  merge_state: string;
+  review_state: string;
+  checks_state: "passing" | "failing" | "pending" | "none" | "";
+  head_ref: string;
+  base_ref: string;
+  updated_at: string;
+};
+
+/** True when an import reference is GitHub's (#12, owner/repo#12, github.com URL). */
+export const isGithubRef = (s: string) =>
+  /github\.com\//.test(s) || /^#?\d+$/.test(s.trim()) || /^[\w.-]+\/[\w.-]+#\d+$/.test(s.trim());
+
 export type Notice = { level: "info" | "error"; text: string };
 
 export type MoveResult = { task: Task; session: Session | null; note: string | null };
@@ -192,6 +226,16 @@ export const api = {
   syncLinearNow: () => invoke<LinearStatus>("sync_linear_now"),
   importLinearTicket: (projectId: number, reference: string) =>
     invoke<{ task: Task; note: string | null }>("import_linear_ticket", { projectId, reference }),
+
+  githubStatus: () => invoke<GithubStatus>("github_status"),
+  setGithubToken: (token: string) => invoke<GithubStatus>("set_github_token", { token }),
+  clearGithubToken: () => invoke<GithubStatus>("clear_github_token"),
+  importGithubIssue: (projectId: number, reference: string) =>
+    invoke<Task>("import_github_issue", { projectId, reference }),
+  openPr: (taskId: number, draft: boolean) => invoke<PullRequest>("open_pr", { taskId, draft }),
+  listProjectPrs: (projectId: number) => invoke<PullRequest[]>("list_project_prs", { projectId }),
+  refreshPr: (id: number) => invoke<PullRequest>("refresh_pr", { id }),
+  mergePr: (id: number, method: string) => invoke<PullRequest>("merge_pr", { id, method }),
 
   deleteTask: (id: number, force = false) => invoke<void>("delete_task", { id, force }),
 
