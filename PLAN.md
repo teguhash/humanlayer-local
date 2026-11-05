@@ -21,10 +21,10 @@ Estimate: 12–18 weeks solo full-time, or about 7–10 weeks with an agent writ
 
 - **Shell:** Tauri 2. Rust backend, React + TypeScript webview. Reuse the shadcn components from upstream `packages/ui`.
 - **Storage:** SQLite (`sqlx` or `rusqlite`). One database file under `~/Library/Application Support/<app>/`.
-- **Rust crates** (Cargo workspace under `src-tauri/crates/`):
-  - `core`: domain types, DB, migrations
-  - `agents`: Claude and Codex adapters
-  - `git`: worktrees and diffs, shelling out to the `git` CLI
+- **Rust crates** (Cargo workspace under `src-tauri/crates/`, packages named `hl-*`):
+  - `core` (`hl-core`): domain types, DB, migrations, login-shell env
+  - `agents` (`hl-agents`): Claude and Codex adapters; emits through an `EventSink` trait, no Tauri dependency
+  - `git` (`hl-git`): worktrees and diffs, shelling out to the `git` CLI
   - `integrations`: Linear (GraphQL over `reqwest`) and GitHub (`gh` CLI, or `octocrab` with a PAT)
 - **Runtime:** agent processes are child processes of the Rust backend. Their events are written to SQLite and sent to the UI as Tauri events. No separate daemon.
 - **Skills:** bundle the RPI skills from upstream `apps/riptide-rpi-claude-plugin` as a Claude plugin and as a Codex skills folder. They are Apache 2.0: keep the LICENSE and add a NOTICE.
@@ -37,7 +37,7 @@ projects       (id, name, repo_path, created_at)
 tasks          (id, project_id, title, stage, position, worktree_path,
                 linear_issue_id, github_issue, created_at, updated_at)
 sessions       (id, task_id, agent_kind [claude|codex], cli_session_id,
-                skill, status, started_at, ended_at)
+                skill, status, created_at, started_at, ended_at)
 events         (id, session_id, seq, kind, payload_json, created_at)
 artifacts      (id, task_id, kind [research|plan|outline|...], path, updated_at)
 pull_requests  (id, task_id, repo, number, state, checks_state, review_state, updated_at)
@@ -100,11 +100,11 @@ Answers the risky questions first.
 
 ### M1: Data + shell (weeks 2–3)
 
-- [ ] Cargo workspace with `core` crate; SQLite migrations for the data model above
-- [ ] Tauri commands: project, task and session CRUD
-- [ ] Sidebar: projects → tasks → sessions
-- [ ] Folder picker for a project's repo path; validate that it is a git repo
-- [ ] Copy shadcn components and Tailwind setup from upstream `packages/ui`
+- [x] Cargo workspace with `core` crate; SQLite migrations for the data model above (crates are `hl-core`, `hl-agents`, `hl-git`: `core` clashes with Rust's built-in crate)
+- [x] Tauri commands: project, task and session CRUD (create, list, delete; edit comes with the board in M4)
+- [x] Sidebar: projects → tasks → sessions
+- [ ] Folder picker for a project's repo path; validate that it is a git repo — built and unit-tested; native picker not yet clicked through in the real window
+- [x] Copy shadcn components and Tailwind setup from upstream `packages/ui`
 
 ### M2: Claude adapter (weeks 4–6)
 
