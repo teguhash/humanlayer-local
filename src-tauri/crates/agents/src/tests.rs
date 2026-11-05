@@ -458,6 +458,43 @@ async fn missing_cli_and_folder_are_reported() {
     assert!(e.contains("Working folder does not exist"), "{e}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn session_folder_is_fixed_and_new_sessions_use_the_worktree() {
+    let mut fx = fixture("cwd");
+    let id = fx.session.id;
+    let repo = fx.dir.join("repo").to_string_lossy().into_owned();
+    fx.rt.send(id, "plain:one").await.unwrap();
+    wait_status(&mut fx.rx, status::IDLE).await;
+    assert_eq!(fx.db.get_session(id).unwrap().cwd.as_deref(), Some(repo.as_str()));
+
+    // The task gets a worktree that is still being set up.
+    let wt = fx.dir.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    let wt = wt.to_string_lossy().into_owned();
+    let task = fx.db.get_session(id).unwrap().task_id;
+    fx.db.set_worktree(task, &wt, "b", "main", "abc").unwrap();
+    let s2 = fx.db.create_session(task, AgentKind::Claude).unwrap();
+    let e = fx.rt.send(s2.id, "plain:x").await.unwrap_err();
+    assert!(e.contains("still being set up"), "{e}");
+
+    // Old session keeps its folder; the new one runs in the worktree.
+    fx.db
+        .set_worktree_status(task, hl_core::model::worktree_status::READY, None)
+        .unwrap();
+    // Stop the process so the next turn spawns (and resumes) a new one.
+    fx.rt.stop(id).unwrap();
+    while fx.rt.is_live(id) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    fx.rt.send(id, "plain:two").await.unwrap();
+    wait_status(&mut fx.rx, status::IDLE).await;
+    assert_eq!(fx.db.get_session(id).unwrap().cwd.as_deref(), Some(repo.as_str()));
+    fx.rt.send(s2.id, "plain:y").await.unwrap();
+    wait_status(&mut fx.rx, status::IDLE).await;
+    assert_eq!(fx.db.get_session(s2.id).unwrap().cwd.as_deref(), Some(wt.as_str()));
+    fx.rt.shutdown();
+}
+
 // ---------- real CLIs (ignored: need login, cost tokens) ----------
 // cargo test -p hl-agents -- --ignored --nocapture --test-threads=1
 

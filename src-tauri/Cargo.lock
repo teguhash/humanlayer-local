@@ -1474,7 +1474,10 @@ dependencies = [
 name = "hl-git"
 version = "0.1.0"
 dependencies = [
+ "glob",
  "hl-core",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

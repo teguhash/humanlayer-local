@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use hl_core::Db;
-use hl_core::model::{AgentKind, Event, Id, Session, status};
+use hl_core::model::{AgentKind, Event, Id, Session, status, worktree_status};
 use hl_core::shell_env;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -176,18 +176,38 @@ impl Runtime {
         Ok(())
     }
 
+    /// The folder the CLI runs in. Fixed at the first turn (stored on the
+    /// session): Claude keys resumable sessions by folder. New sessions use
+    /// the task's worktree when it has one, else the repo.
     fn session_cwd(&self, session: &Session) -> Result<String, String> {
-        let task = self
-            .db
-            .get_task(session.task_id)
-            .map_err(|e| e.to_string())?;
-        let cwd = match task.worktree_path {
-            Some(w) => w,
+        let cwd = match &session.cwd {
+            Some(c) => c.clone(),
             None => {
-                self.db
-                    .get_project(task.project_id)
-                    .map_err(|e| e.to_string())?
-                    .repo_path
+                let task = self
+                    .db
+                    .get_task(session.task_id)
+                    .map_err(|e| e.to_string())?;
+                if matches!(
+                    task.worktree_status.as_deref(),
+                    Some(worktree_status::CREATING | worktree_status::SETTING_UP)
+                ) {
+                    return Err("The task's worktree is still being set up.".into());
+                }
+                let cwd = match task.worktree_path {
+                    Some(w) => w,
+                    None => {
+                        self.db
+                            .get_project(task.project_id)
+                            .map_err(|e| e.to_string())?
+                            .repo_path
+                    }
+                };
+                if Path::new(&cwd).is_dir() {
+                    self.db
+                        .set_session_cwd(session.id, &cwd)
+                        .map_err(|e| e.to_string())?;
+                }
+                cwd
             }
         };
         if Path::new(&cwd).is_dir() {

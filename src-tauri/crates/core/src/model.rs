@@ -22,6 +22,16 @@ pub struct Task {
     pub github_issue: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Branch the task's worktree uses (kept after the worktree is removed).
+    pub branch: Option<String>,
+    /// What the worktree branched from: a branch name, or a commit when HEAD was detached.
+    pub base_ref: Option<String>,
+    pub base_commit: Option<String>,
+    /// See `worktree_status`. None = no worktree.
+    pub worktree_status: Option<String>,
+    /// Output of the last worktree creation and setup command.
+    pub worktree_log: Option<String>,
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +69,8 @@ pub struct Session {
     pub created_at: String,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
+    /// Folder the CLI runs in, fixed at the first turn.
+    pub cwd: Option<String>,
 }
 
 /// One stored event. `kind` is ours (user_prompt, cli, stderr, ...);
@@ -83,4 +95,14 @@ pub mod status {
     pub const FAILED: &str = "failed";
     /// A turn was cut off: stopped by the user, or the app quit mid-turn.
     pub const INTERRUPTED: &str = "interrupted";
+}
+
+pub mod worktree_status {
+    pub const CREATING: &str = "creating";
+    pub const SETTING_UP: &str = "setting_up";
+    pub const READY: &str = "ready";
+    /// The worktree exists but the setup command failed.
+    pub const SETUP_FAILED: &str = "setup_failed";
+    /// `git worktree add` failed; there is no worktree.
+    pub const FAILED: &str = "failed";
 }

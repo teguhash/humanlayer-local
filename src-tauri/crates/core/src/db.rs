@@ -9,9 +9,12 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::model::{AgentKind, Event, Id, Project, Session, Task, status};
+use crate::model::{AgentKind, Event, Id, Project, Session, Task, status, worktree_status};
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_worktrees.sql"),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -143,6 +146,80 @@ impl Db {
         self.delete("tasks", "Task", id)
     }
 
+    /// Run an `UPDATE tasks ... WHERE id = ?1 RETURNING *`.
+    fn update_task(&self, sql: &str, args: impl rusqlite::Params) -> Result<Task> {
+        self.with(|c| {
+            c.query_row(sql, args, task_row)
+                .optional()?
+                .ok_or(Error::NotFound("Task"))
+        })
+    }
+
+    /// Record a newly created worktree (status `setting_up`).
+    pub fn set_worktree(
+        &self,
+        id: Id,
+        path: &str,
+        branch: &str,
+        base_ref: &str,
+        base_commit: &str,
+    ) -> Result<Task> {
+        self.update_task(
+            "UPDATE tasks SET worktree_path = ?2, branch = ?3, base_ref = ?4, base_commit = ?5,
+               worktree_status = ?6, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            params![id, path, branch, base_ref, base_commit, worktree_status::SETTING_UP],
+        )
+    }
+
+    /// Set the worktree status; `log` replaces the stored log when given.
+    pub fn set_worktree_status(&self, id: Id, new_status: &str, log: Option<&str>) -> Result<Task> {
+        self.update_task(
+            "UPDATE tasks SET worktree_status = ?2, worktree_log = coalesce(?3, worktree_log),
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            params![id, new_status, log],
+        )
+    }
+
+    /// The worktree is gone. Branch and base stay so it can be recreated.
+    pub fn clear_worktree(&self, id: Id) -> Result<Task> {
+        self.update_task(
+            "UPDATE tasks SET worktree_path = NULL, worktree_status = NULL,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            [id],
+        )
+    }
+
+    pub fn set_task_archived(&self, id: Id, archived: bool) -> Result<Task> {
+        self.update_task(
+            "UPDATE tasks SET
+               archived_at = CASE WHEN ?2 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            params![id, archived],
+        )
+    }
+
+    /// At app start no setup is still running; mark cut-off ones failed.
+    pub fn fail_unfinished_worktrees(&self) -> Result<usize> {
+        self.with(|c| {
+            Ok(c.execute(
+                "UPDATE tasks SET
+                   worktree_status = CASE WHEN worktree_path IS NULL THEN ?1 ELSE ?2 END,
+                   worktree_log = coalesce(worktree_log, '') || '\n[The app quit before this finished.]'
+                 WHERE worktree_status IN (?3, ?4)",
+                params![
+                    worktree_status::FAILED,
+                    worktree_status::SETUP_FAILED,
+                    worktree_status::CREATING,
+                    worktree_status::SETTING_UP
+                ],
+            )?)
+        })
+    }
+
     // ---- sessions ----
 
     pub fn create_session(&self, task_id: Id, agent: AgentKind) -> Result<Session> {
@@ -191,6 +268,13 @@ impl Db {
             )
             .optional()?
             .ok_or(Error::NotFound("Session"))
+        })
+    }
+
+    pub fn set_session_cwd(&self, id: Id, cwd: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute("UPDATE sessions SET cwd = ?2 WHERE id = ?1", params![id, cwd])?;
+            Ok(())
         })
     }
 
@@ -319,6 +403,12 @@ fn task_row(r: &Row) -> rusqlite::Result<Task> {
         github_issue: r.get("github_issue")?,
         created_at: r.get("created_at")?,
         updated_at: r.get("updated_at")?,
+        branch: r.get("branch")?,
+        base_ref: r.get("base_ref")?,
+        base_commit: r.get("base_commit")?,
+        worktree_status: r.get("worktree_status")?,
+        worktree_log: r.get("worktree_log")?,
+        archived_at: r.get("archived_at")?,
     })
 }
 
@@ -354,6 +444,7 @@ fn session_row(r: &Row) -> rusqlite::Result<Session> {
         created_at: r.get("created_at")?,
         started_at: r.get("started_at")?,
         ended_at: r.get("ended_at")?,
+        cwd: r.get("cwd")?,
     })
 }
 
@@ -464,6 +555,39 @@ mod tests {
         assert_eq!(after.started_at, r.started_at);
         assert!(after.ended_at.is_some());
         assert_eq!(db.mark_running_sessions_interrupted().unwrap(), 0);
+    }
+
+    #[test]
+    fn worktree_lifecycle_and_archive() {
+        let db = db();
+        let p = db.create_project("p", "/r").unwrap();
+        let t = db.create_task(p.id, "t").unwrap();
+        assert_eq!(t.worktree_status, None);
+        db.set_worktree_status(t.id, worktree_status::CREATING, None)
+            .unwrap();
+        let t = db.set_worktree(t.id, "/w", "b", "main", "abc").unwrap();
+        assert_eq!(
+            (t.worktree_path.as_deref(), t.branch.as_deref(), t.worktree_status.as_deref()),
+            (Some("/w"), Some("b"), Some(worktree_status::SETTING_UP))
+        );
+        assert_eq!(db.fail_unfinished_worktrees().unwrap(), 1);
+        let t = db.get_task(t.id).unwrap();
+        assert_eq!(t.worktree_status.as_deref(), Some(worktree_status::SETUP_FAILED));
+        assert!(t.worktree_log.unwrap().contains("app quit"));
+        let t = db
+            .set_worktree_status(t.id, worktree_status::READY, Some("ok"))
+            .unwrap();
+        assert_eq!(t.worktree_log.as_deref(), Some("ok"));
+        let t = db.clear_worktree(t.id).unwrap();
+        assert_eq!((t.worktree_path, t.worktree_status), (None, None));
+        assert_eq!(t.branch.as_deref(), Some("b"));
+        assert!(db.set_task_archived(t.id, true).unwrap().archived_at.is_some());
+        assert!(db.set_task_archived(t.id, false).unwrap().archived_at.is_none());
+        assert!(matches!(db.clear_worktree(999), Err(Error::NotFound("Task"))));
+
+        let s = db.create_session(t.id, AgentKind::Claude).unwrap();
+        db.set_session_cwd(s.id, "/w").unwrap();
+        assert_eq!(db.get_session(s.id).unwrap().cwd.as_deref(), Some("/w"));
     }
 
     #[test]

@@ -2,8 +2,11 @@
 name = "hl-git"
 version = "0.1.0"
 edition = "2024"
-description = "git CLI helpers: repo validation (worktrees and diffs come in M3)"
+description = "git CLI helpers: repo validation, per-task worktrees, diffs"
 
 [dependencies]
 hl-core = { path = "../core" }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+glob = "0.3"
