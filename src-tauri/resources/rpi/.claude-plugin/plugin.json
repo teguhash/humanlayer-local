@@ -1,0 +1,6 @@
+{
+	"name": "rpi",
+	"description": "Research-Plan-Implement workflow, bundled with HumanLayer Local. Skills and agents from HumanLayer's riptide-rpi plugin (Apache-2.0, see LICENSE and the app's NOTICE).",
+	"version": "0.50.0-local",
+	"license": "Apache-2.0"
+}

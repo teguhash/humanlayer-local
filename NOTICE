@@ -11,3 +11,14 @@ Derived files:
   src/styles/globals.css    trimmed from packages/ui/src/styles/globals.css
   src-tauri/crates/core/src/shell_env.rs
                             idea ported from apps/riptide-native/src/shell_env.rs
+  src-tauri/resources/rpi/skills/
+                            copied unchanged from apps/riptide-rpi-claude-plugin/skills
+                            (symlinked show-me.md files replaced by copies of
+                            apps/riptide-humanlayer-claude-plugin/skills/show-me/SKILL.md)
+  src-tauri/resources/rpi/agents/*.md
+                            converted from apps/riptide-daemon/src/agents/claudecode/agents/*.ts
+                            (same text, rendered as plugin agent Markdown)
+  src-tauri/resources/rpi/LICENSE
+                            the plugin's Apache-2.0 license, kept with it
+  src-tauri/src/rpi.rs      the artifacts-directory prompt text is adapted from
+                            apps/riptide-daemon/src/agents/codelayer/execute-codelayer.ts

@@ -9,11 +9,16 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::model::{AgentKind, Event, Id, Project, Session, Task, status, worktree_status};
+use crate::artifacts::ArtifactFile;
+use crate::model::{
+    AgentKind, Artifact, Event, Id, Project, Session, Task, stage, status, worktree_status,
+};
+use crate::slug::slugify;
 
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_worktrees.sql"),
+    include_str!("../migrations/0003_board.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +55,7 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "wal")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         migrate(&mut conn)?;
+        backfill_slugs(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -110,19 +116,74 @@ impl Db {
     // ---- tasks ----
 
     pub fn create_task(&self, project_id: Id, title: &str) -> Result<Task> {
+        self.create_task_with(project_id, title, "")
+    }
+
+    pub fn create_task_with(&self, project_id: Id, title: &str, description: &str) -> Result<Task> {
         let title = non_empty(title, "Task title")?;
         self.with(|c| {
+            let slug = free_slug(c, project_id, &slugify(title))?;
             // New tasks go to the bottom of the backlog column.
             c.query_row(
-                "INSERT INTO tasks (project_id, title, position)
-                 VALUES (?1, ?2, (SELECT coalesce(max(position), -1) + 1
+                "INSERT INTO tasks (project_id, title, description, slug, position)
+                 VALUES (?1, ?2, ?3, ?4, (SELECT coalesce(max(position), -1) + 1
                                   FROM tasks WHERE project_id = ?1 AND stage = 'backlog'))
                  RETURNING *",
-                params![project_id, title],
+                params![project_id, title, description.trim(), slug],
                 task_row,
             )
             .map_err(|e| fk_to_not_found(e, "Project"))
         })
+    }
+
+    /// Edit title and description. The slug stays, so the docs folder and
+    /// branch keep their names.
+    pub fn update_task_text(&self, id: Id, title: &str, description: &str) -> Result<Task> {
+        let title = non_empty(title, "Task title")?;
+        self.update_task(
+            "UPDATE tasks SET title = ?2, description = ?3,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            params![id, title, description.trim()],
+        )
+    }
+
+    /// Put the task in `new_stage` at `index` (0 = top), renumbering that
+    /// column. Returns the task and the stage it came from.
+    pub fn move_task(&self, id: Id, new_stage: &str, index: usize) -> Result<(Task, String)> {
+        if !stage::ALL.contains(&new_stage) {
+            return Err(Error::Invalid(format!("Unknown stage {new_stage}.")));
+        }
+        let mut conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let tx = conn.transaction()?;
+        let (project_id, old_stage): (Id, String) = tx
+            .query_row(
+                "SELECT project_id, stage FROM tasks WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or(Error::NotFound("Task"))?;
+        let mut ids: Vec<Id> = {
+            let mut st = tx.prepare(
+                "SELECT id FROM tasks WHERE project_id = ?1 AND stage = ?2 AND id != ?3
+                 ORDER BY position, id",
+            )?;
+            st.query_map(params![project_id, new_stage, id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        ids.insert(index.min(ids.len()), id);
+        for (pos, tid) in (0_i64..).zip(&ids) {
+            tx.execute(
+                "UPDATE tasks SET position = ?2, stage = ?3,
+                   updated_at = CASE WHEN id = ?4 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE updated_at END
+                 WHERE id = ?1",
+                params![tid, pos, new_stage, id],
+            )?;
+        }
+        let task = tx.query_row("SELECT * FROM tasks WHERE id = ?1", [id], task_row)?;
+        tx.commit()?;
+        Ok((task, old_stage))
     }
 
     pub fn list_tasks(&self, project_id: Id) -> Result<Vec<Task>> {
@@ -227,13 +288,72 @@ impl Db {
         })
     }
 
+    // ---- artifacts ----
+
+    /// Replace the stored list for a task with a fresh scan. Returns true
+    /// when anything changed.
+    pub fn replace_artifacts(&self, task_id: Id, files: &[ArtifactFile]) -> Result<bool> {
+        let before = self.list_artifacts(task_id)?;
+        let same = before.len() == files.len()
+            && files.iter().all(|f| {
+                before
+                    .iter()
+                    .any(|a| a.path == f.name && a.updated_at == f.modified.to_string())
+            });
+        if same {
+            return Ok(false);
+        }
+        let mut conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM artifacts WHERE task_id = ?1", [task_id])?;
+        for f in files {
+            tx.execute(
+                "INSERT INTO artifacts (task_id, kind, path, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![task_id, f.kind, f.name, f.modified.to_string()],
+            )
+            .map_err(|e| fk_to_not_found(e, "Task"))?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Newest first. `updated_at` is seconds since the Unix epoch.
+    pub fn list_artifacts(&self, task_id: Id) -> Result<Vec<Artifact>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT * FROM artifacts WHERE task_id = ?1
+                 ORDER BY CAST(updated_at AS INTEGER) DESC, path",
+            )?;
+            let rows = st.query_map([task_id], |r| {
+                Ok(Artifact {
+                    id: r.get("id")?,
+                    task_id: r.get("task_id")?,
+                    kind: r.get("kind")?,
+                    path: r.get("path")?,
+                    updated_at: r.get("updated_at")?,
+                })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     // ---- sessions ----
 
     pub fn create_session(&self, task_id: Id, agent: AgentKind) -> Result<Session> {
+        self.create_session_with(task_id, agent, None)
+    }
+
+    /// `skill` is recorded on the session (e.g. "create-research").
+    pub fn create_session_with(
+        &self,
+        task_id: Id,
+        agent: AgentKind,
+        skill: Option<&str>,
+    ) -> Result<Session> {
         self.with(|c| {
             c.query_row(
-                "INSERT INTO sessions (task_id, agent_kind) VALUES (?1, ?2) RETURNING *",
-                params![task_id, agent.as_str()],
+                "INSERT INTO sessions (task_id, agent_kind, skill) VALUES (?1, ?2, ?3) RETURNING *",
+                params![task_id, agent.as_str(), skill],
                 session_row,
             )
             .map_err(|e| fk_to_not_found(e, "Task"))
@@ -372,6 +492,42 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// `base`, or `base-2`, `base-3`, ... whichever is free in the project.
+fn free_slug(c: &Connection, project_id: Id, base: &str) -> Result<String> {
+    let mut st = c.prepare("SELECT 1 FROM tasks WHERE project_id = ?1 AND slug = ?2")?;
+    for n in 1.. {
+        let s = if n == 1 {
+            base.to_string()
+        } else {
+            format!("{base}-{n}")
+        };
+        if !st.exists(params![project_id, s])? {
+            return Ok(s);
+        }
+    }
+    unreachable!()
+}
+
+/// Tasks created before migration 0003 have no slug.
+fn backfill_slugs(conn: &mut Connection) -> Result<()> {
+    let rows: Vec<(Id, Id, String)> = {
+        let mut st =
+            conn.prepare("SELECT id, project_id, title FROM tasks WHERE slug IS NULL ORDER BY id")?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let tx = conn.transaction()?;
+    for (id, project_id, title) in rows {
+        let slug = free_slug(&tx, project_id, &slugify(&title))?;
+        tx.execute(
+            "UPDATE tasks SET slug = ?2 WHERE id = ?1",
+            params![id, slug],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn non_empty<'a>(s: &'a str, what: &str) -> Result<&'a str> {
     let t = s.trim();
     if t.is_empty() {
@@ -406,6 +562,8 @@ fn task_row(r: &Row) -> rusqlite::Result<Task> {
         id: r.get("id")?,
         project_id: r.get("project_id")?,
         title: r.get("title")?,
+        description: r.get("description")?,
+        slug: r.get::<_, Option<String>>("slug")?.unwrap_or_default(),
         stage: r.get("stage")?,
         position: r.get("position")?,
         worktree_path: r.get("worktree_path")?,
@@ -618,6 +776,105 @@ mod tests {
         let s = db.create_session(t.id, AgentKind::Claude).unwrap();
         db.set_session_cwd(s.id, "/w").unwrap();
         assert_eq!(db.get_session(s.id).unwrap().cwd.as_deref(), Some("/w"));
+    }
+
+    #[test]
+    fn slugs_text_and_board_moves() {
+        let db = db();
+        let p = db.create_project("p", "/r").unwrap();
+        let a = db.create_task(p.id, "Fix it!").unwrap();
+        let b = db.create_task_with(p.id, "fix it", " why ").unwrap();
+        let c = db.create_task(p.id, "Other").unwrap();
+        assert_eq!((a.slug.as_str(), b.slug.as_str()), ("fix-it", "fix-it-2"));
+        assert_eq!(b.description, "why");
+        let a2 = db.update_task_text(a.id, "Renamed", "d").unwrap();
+        assert_eq!((a2.title.as_str(), a2.slug.as_str()), ("Renamed", "fix-it"));
+
+        // Move c to the top of research, then a below it, then b between.
+        let (c2, from) = db.move_task(c.id, "research", 0).unwrap();
+        assert_eq!((c2.stage.as_str(), from.as_str()), ("research", "backlog"));
+        db.move_task(a.id, "research", 9).unwrap();
+        db.move_task(b.id, "research", 1).unwrap();
+        let order: Vec<_> = db
+            .list_tasks(p.id)
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.stage == "research")
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(order, vec![c.id, b.id, a.id]);
+        // Reorder within the column.
+        db.move_task(a.id, "research", 0).unwrap();
+        let first = db
+            .list_tasks(p.id)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.stage == "research")
+            .unwrap();
+        assert_eq!(first.id, a.id);
+        assert!(matches!(
+            db.move_task(a.id, "nope", 0),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            db.move_task(999, "plan", 0),
+            Err(Error::NotFound("Task"))
+        ));
+    }
+
+    #[test]
+    fn artifacts_replace_and_list() {
+        let db = db();
+        let p = db.create_project("p", "/r").unwrap();
+        let t = db.create_task(p.id, "t").unwrap();
+        let f = |name: &str, kind: &str, m: u64| ArtifactFile {
+            name: name.into(),
+            kind: kind.into(),
+            modified: m,
+            size: 1,
+        };
+        assert!(
+            db.replace_artifacts(t.id, &[f("a.md", "research", 1), f("b.md", "plan", 2)])
+                .unwrap()
+        );
+        assert!(
+            !db.replace_artifacts(t.id, &[f("b.md", "plan", 2), f("a.md", "research", 1)])
+                .unwrap()
+        );
+        let l = db.list_artifacts(t.id).unwrap();
+        assert_eq!(
+            l.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
+            vec!["b.md", "a.md"]
+        );
+        assert!(
+            db.replace_artifacts(t.id, &[f("a.md", "research", 3)])
+                .unwrap()
+        );
+        assert_eq!(db.list_artifacts(t.id).unwrap().len(), 1);
+        let s = db
+            .create_session_with(t.id, AgentKind::Claude, Some("create-research"))
+            .unwrap();
+        assert_eq!(s.skill.as_deref(), Some("create-research"));
+    }
+
+    #[test]
+    fn backfill_gives_old_tasks_unique_slugs() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, repo_path) VALUES (1, 'p', '/r');
+             INSERT INTO tasks (project_id, title, position) VALUES (1, 'Same', 0), (1, 'Same', 1);",
+        )
+        .unwrap();
+        let db = Db::init(conn).unwrap();
+        let slugs: Vec<_> = db
+            .list_tasks(1)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.slug)
+            .collect();
+        assert_eq!(slugs, vec!["same", "same-2"]);
     }
 
     #[test]

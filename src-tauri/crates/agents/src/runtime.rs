@@ -59,10 +59,17 @@ pub trait Sink: Send + Sync + 'static {
 
 pub type EnvFn = dyn Fn() -> (HashMap<String, String>, Option<String>) + Send + Sync;
 
+/// Called before each CLI process starts, with the session and its folder.
+/// Returns extra CLI arguments (plugins, system prompt). It may also prepare
+/// the folder (the app links the task's docs folder into it). Runs on a
+/// blocking thread.
+pub type PrepareFn = dyn Fn(&Session, &str) -> Result<Vec<String>, String> + Send + Sync;
+
 pub struct Runtime {
     db: Arc<Db>,
     sink: Arc<dyn Sink>,
     env: Arc<EnvFn>,
+    prepare: Arc<PrepareFn>,
     live: Mutex<HashMap<Id, Arc<Live>>>,
     next_request: AtomicU64,
 }
@@ -97,12 +104,22 @@ impl Runtime {
     }
 
     pub fn with_env(db: Arc<Db>, sink: impl Sink, env: Arc<EnvFn>) -> Result<Arc<Self>, String> {
+        Self::with_options(db, sink, env, Arc::new(|_, _| Ok(vec![])))
+    }
+
+    pub fn with_options(
+        db: Arc<Db>,
+        sink: impl Sink,
+        env: Arc<EnvFn>,
+        prepare: Arc<PrepareFn>,
+    ) -> Result<Arc<Self>, String> {
         db.mark_running_sessions_interrupted()
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
             db,
             sink: Arc::new(sink),
             env,
+            prepare,
             live: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
         }))
@@ -229,6 +246,13 @@ impl Runtime {
         let (env, env_err) = tokio::task::spawn_blocking(move || env_fn())
             .await
             .map_err(|e| e.to_string())?;
+        let mut args = proto.args(cwd, resume);
+        let (prepare, s, c) = (self.prepare.clone(), session.clone(), cwd.to_string());
+        args.extend(
+            tokio::task::spawn_blocking(move || prepare(&s, &c))
+                .await
+                .map_err(|e| e.to_string())??,
+        );
         let bin = shell_env::which(proto.binary(), &env).ok_or_else(|| {
             format!(
                 "`{}` not found on PATH. Install it, or check that your login shell puts it on PATH.{}",
@@ -246,7 +270,7 @@ impl Runtime {
         });
         let weak: Weak<Self> = Arc::downgrade(self);
         let (sid, cb_live) = (session.id, live.clone());
-        let proc = process::spawn(&bin, &proto.args(cwd, resume), &env, cwd, move |ev| {
+        let proc = process::spawn(&bin, &args, &env, cwd, move |ev| {
             if let Some(rt) = weak.upgrade() {
                 rt.on_proc_event(sid, &cb_live, ev);
             }

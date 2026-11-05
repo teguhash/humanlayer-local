@@ -73,6 +73,31 @@ pub fn repo_toplevel(path: &Path, env: &Env) -> Result<PathBuf> {
     }
 }
 
+/// Make git ignore `rel` (a path inside `cwd`'s work tree) by adding
+/// `pattern` to the repo's `info/exclude`, which is local and never
+/// committed (shared by all worktrees). Does nothing if already ignored.
+pub fn ensure_ignored(cwd: &Path, rel: &str, pattern: &str, env: &Env) -> Result<()> {
+    // Exit 0: ignored. Exit 1: not ignored.
+    if git(cwd, &["check-ignore", "-q", rel], env).is_ok() {
+        return Ok(());
+    }
+    let common = git(cwd, &["rev-parse", "--git-common-dir"], env)?;
+    let info = cwd.join(common).join("info");
+    std::fs::create_dir_all(&info).map_err(|e| Error::Git(e.to_string()))?;
+    let path = info.join("exclude");
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    if text.lines().any(|l| l.trim() == pattern) {
+        return Ok(());
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "# HumanLayer Local task docs (linked folders)\n{pattern}\n"
+    ));
+    std::fs::write(&path, text).map_err(|e| Error::Git(e.to_string()))
+}
+
 #[cfg(test)]
 pub(crate) mod testutil {
     use super::*;
@@ -125,6 +150,20 @@ mod tests {
         let sub = d.join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(repo_toplevel(&sub, &env()).unwrap(), d);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn ignore_rule_goes_to_info_exclude_once() {
+        let d = repo("ign");
+        let env = env();
+        std::fs::create_dir_all(d.join(".humanlayer/tasks/x")).unwrap();
+        std::fs::write(d.join(".humanlayer/tasks/x/a.md"), "a").unwrap();
+        ensure_ignored(&d, ".humanlayer/tasks/x", "/.humanlayer/tasks/", &env).unwrap();
+        ensure_ignored(&d, ".humanlayer/tasks/x", "/.humanlayer/tasks/", &env).unwrap();
+        let ex = std::fs::read_to_string(d.join(".git/info/exclude")).unwrap();
+        assert_eq!(ex.matches("/.humanlayer/tasks/").count(), 1, "{ex}");
+        assert_eq!(git(&d, &["status", "--porcelain"], &env).unwrap(), "");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

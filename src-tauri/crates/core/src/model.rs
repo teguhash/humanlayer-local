@@ -15,6 +15,11 @@ pub struct Task {
     pub id: Id,
     pub project_id: Id,
     pub title: String,
+    /// Free text; written to the docs folder as task.md.
+    pub description: String,
+    /// Names the docs folder (`.humanlayer/tasks/<slug>`) and the worktree
+    /// branch. Unique per project, fixed at creation.
+    pub slug: String,
     pub stage: String,
     pub position: i64,
     pub worktree_path: Option<String>,
@@ -105,4 +110,37 @@ pub mod worktree_status {
     pub const SETUP_FAILED: &str = "setup_failed";
     /// `git worktree add` failed; there is no worktree.
     pub const FAILED: &str = "failed";
+}
+
+/// Board columns, in order, and the RPI skill each one starts.
+pub mod stage {
+    pub const BACKLOG: &str = "backlog";
+    pub const RESEARCH: &str = "research";
+    pub const PLAN: &str = "plan";
+    pub const IMPLEMENT: &str = "implement";
+    pub const REVIEW: &str = "review";
+    pub const DONE: &str = "done";
+    pub const ALL: [&str; 6] = [BACKLOG, RESEARCH, PLAN, IMPLEMENT, REVIEW, DONE];
+
+    /// The bundled plugin skill (without the `rpi:` prefix) that moving a
+    /// task into `stage` starts.
+    pub fn skill(stage: &str) -> Option<&'static str> {
+        match stage {
+            RESEARCH => Some("create-research"),
+            PLAN => Some("create-plan"),
+            IMPLEMENT => Some("implement-plan"),
+            REVIEW => Some("describe-pr"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Artifact {
+    pub id: Id,
+    pub task_id: Id,
+    pub kind: String,
+    /// File name inside the task's docs folder.
+    pub path: String,
+    pub updated_at: String,
 }

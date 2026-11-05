@@ -16,7 +16,7 @@ pub mod transcript;
 use hl_core::model::AgentKind;
 use serde_json::Value;
 
-pub use runtime::{Runtime, SessionEvent, Sink, Transcript};
+pub use runtime::{EnvFn, PrepareFn, Runtime, SessionEvent, Sink, Transcript};
 pub use transcript::{Decision, Item, SessionUsage};
 
 /// The protocol of one agent CLI. Implementations are stateless; process

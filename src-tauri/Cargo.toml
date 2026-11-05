@@ -27,6 +27,7 @@ hl-core = { path = "crates/core" }
 hl-agents = { path = "crates/agents" }
 tokio = { workspace = true }
 hl-git = { path = "crates/git" }
+notify = "8"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -10,12 +10,14 @@ use std::time::Duration;
 use hl_agents::{Decision, SessionUsage, Transcript};
 use hl_core::Db;
 use hl_core::model::{AgentKind, Id, Project, Session, Task, worktree_status as ws};
-use hl_git::config::{WorkspaceConfig, slugify};
+use hl_git::config::WorkspaceConfig;
 use hl_git::diff::DiffSummary;
 use hl_git::worktree::{self, Branch};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::rpi::{self, MoveResult};
 use crate::{AppState, TASK_UPDATED};
+use hl_core::model::Artifact;
 
 type Res<T> = Result<T, String>;
 
@@ -71,8 +73,103 @@ pub async fn list_tasks(state: State<'_, AppState>, project_id: Id) -> Res<Vec<T
 }
 
 #[tauri::command]
-pub async fn create_task(state: State<'_, AppState>, project_id: Id, title: String) -> Res<Task> {
-    state.db.create_task(project_id, &title).map_err(err)
+pub async fn create_task(
+    state: State<'_, AppState>,
+    project_id: Id,
+    title: String,
+    description: Option<String>,
+) -> Res<Task> {
+    state
+        .db
+        .create_task_with(project_id, &title, description.as_deref().unwrap_or(""))
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn update_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: Id,
+    title: String,
+    description: String,
+) -> Res<Task> {
+    let t = state
+        .db
+        .update_task_text(id, &title, &description)
+        .map_err(err)?;
+    emit_task(&app, &t);
+    Ok(t)
+}
+
+/// Move a task on the board (`index` 0 = top of the column). Entering a
+/// new stage starts that stage's skill session.
+#[tauri::command]
+pub async fn move_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: Id,
+    stage: String,
+    index: usize,
+) -> Res<MoveResult> {
+    let (task, from) = state.db.move_task(task_id, &stage, index).map_err(err)?;
+    emit_task(&app, &task);
+    if from == task.stage {
+        return Ok(MoveResult {
+            task,
+            session: None,
+            note: None,
+        });
+    }
+    rpi::on_stage_entered(&app, task).await
+}
+
+/// Start the current stage's skill session again (after a failure, say).
+#[tauri::command]
+pub async fn start_stage_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: Id,
+) -> Res<MoveResult> {
+    let task = state.db.get_task(task_id).map_err(err)?;
+    rpi::on_stage_entered(&app, task).await
+}
+
+// ---- task docs ----
+
+#[tauri::command]
+pub async fn list_artifacts(state: State<'_, AppState>, task_id: Id) -> Res<Vec<Artifact>> {
+    rpi::refresh_artifacts(&state.db, &state.artifacts, task_id)?;
+    state.db.list_artifacts(task_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn read_artifact(state: State<'_, AppState>, task_id: Id, path: String) -> Res<String> {
+    state.artifacts.read(task_id, &path)
+}
+
+/// Start a session that revises a document with the user's feedback
+/// (`/rpi:iterate-research`, `/rpi:iterate-plan`, ...).
+#[tauri::command]
+pub async fn iterate_artifact(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: Id,
+    path: String,
+    feedback: String,
+) -> Res<Session> {
+    if feedback.trim().is_empty() {
+        return Err("Write some feedback first.".into());
+    }
+    let task = state.db.get_task(task_id).map_err(err)?;
+    let kind = hl_core::artifacts::kind_of(&path);
+    let skill = rpi::iterate_skill(kind).ok_or_else(|| format!("No iterate skill for {path}."))?;
+    let prompt = format!(
+        "/rpi:{skill} {}/{}/{path}\n\nFeedback:\n{}",
+        hl_core::artifacts::LINK_DIR,
+        task.slug,
+        feedback.trim()
+    );
+    rpi::start_skill_session(&app, task_id, skill, &prompt).await
 }
 
 /// Delete a task. Its worktree folder is removed first (the branch is
@@ -83,6 +180,7 @@ pub async fn delete_task(state: State<'_, AppState>, id: Id, force: Option<bool>
     stop_task_sessions(&state, id).await;
     remove_worktree(&state.db, &task, force.unwrap_or(false)).await?;
     state.db.delete_task(id).map_err(err)?;
+    state.artifacts.remove(id);
     // Stop agent processes whose session row is gone.
     state.rt.prune();
     Ok(())
@@ -113,6 +211,11 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 /// the archive) gets its old branch back.
 #[tauri::command]
 pub async fn create_worktree(app: AppHandle, state: State<'_, AppState>, task_id: Id) -> Res<Task> {
+    start_worktree(&app, &state, task_id).await
+}
+
+pub(crate) async fn start_worktree(app: &AppHandle, state: &AppState, task_id: Id) -> Res<Task> {
+    let app = app.clone();
     let task = state.db.get_task(task_id).map_err(err)?;
     if task.worktree_path.is_some() || busy(&task) {
         return Err("This task already has a worktree.".into());
@@ -154,7 +257,7 @@ fn worktree_job(
     cfg: &WorkspaceConfig,
 ) {
     let (env, _) = hl_core::shell_env::get();
-    let slug = slugify(&task.title);
+    let slug = task.slug.clone();
     let which = match &task.branch {
         Some(b) => Branch::Existing {
             branch: b,
@@ -168,7 +271,10 @@ fn worktree_job(
     };
     let c = match worktree::create(repo, cfg, which, &env) {
         Ok(c) => c,
-        Err(e) => return save(ws::FAILED, &e.to_string()),
+        Err(e) => {
+            save(ws::FAILED, &e.to_string());
+            return rpi::on_worktree_done(app, task.id, false);
+        }
     };
     // A restored branch keeps its original base.
     let base_ref = task
@@ -184,9 +290,12 @@ fn worktree_job(
         &base_ref,
         &base_commit,
     ) {
-        return save(ws::FAILED, &format!("{}\n{e}", c.log));
+        save(ws::FAILED, &format!("{}\n{e}", c.log));
+        return rpi::on_worktree_done(app, task.id, false);
     }
     run_setup_step(app, db, task.id, &c.path, &cfg.setup_command, c.log, &env);
+    // A failed setup still leaves a usable worktree; the session can start.
+    rpi::on_worktree_done(app, task.id, true);
 }
 
 fn run_setup_step(

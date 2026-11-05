@@ -504,6 +504,40 @@ async fn session_folder_is_fixed_and_new_sessions_use_the_worktree() {
     fx.rt.shutdown();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn prepare_hook_adds_args_and_can_refuse() {
+    let mut fx = fixture("prepare");
+    let (tx, mut rx) = unbounded_channel();
+    let rt = Runtime::with_options(
+        fx.db.clone(),
+        ChanSink(tx),
+        fx.env.clone(),
+        Arc::new(|s: &Session, cwd: &str| {
+            if s.skill.as_deref() == Some("refuse") {
+                return Err("docs folder blocked".into());
+            }
+            Ok(vec!["--plugin-dir".into(), format!("{cwd}/plug")])
+        }),
+    )
+    .unwrap();
+    rt.send(fx.session.id, "args").await.unwrap();
+    let evs = wait_status(&mut rx, status::IDLE).await;
+    let args = texts(&evs).pop().unwrap();
+    assert!(args.contains("\"--plugin-dir\""), "{args}");
+    assert!(args.contains("/repo/plug"), "{args}");
+
+    let task = fx.db.get_session(fx.session.id).unwrap().task_id;
+    let s2 = fx
+        .db
+        .create_session_with(task, AgentKind::Claude, Some("refuse"))
+        .unwrap();
+    let e = rt.send(s2.id, "plain:x").await.unwrap_err();
+    assert_eq!(e, "docs folder blocked");
+    rt.shutdown();
+    fx.rt.shutdown();
+    let _ = &mut fx.rx;
+}
+
 // ---------- real CLIs (ignored: need login, cost tokens) ----------
 // cargo test -p hl-agents -- --ignored --nocapture --test-threads=1
 
