@@ -114,6 +114,17 @@ export type PullRequest = {
 export const isGithubRef = (s: string) =>
   /github\.com\//.test(s) || /^#?\d+$/.test(s.trim()) || /^[\w.-]+\/[\w.-]+#\d+$/.test(s.trim());
 
+export type Tool = {
+  name: string;
+  purpose: string;
+  required: boolean;
+  path: string | null;
+  version: string | null;
+  error: string | null;
+  install: string;
+};
+export type ToolCheck = { tools: Tool[]; env_error: string | null };
+
 export type Notice = { level: "info" | "error"; text: string };
 
 export type MoveResult = { task: Task; session: Session | null; note: string | null };
@@ -236,6 +247,9 @@ export const api = {
   listProjectPrs: (projectId: number) => invoke<PullRequest[]>("list_project_prs", { projectId }),
   refreshPr: (id: number) => invoke<PullRequest>("refresh_pr", { id }),
   mergePr: (id: number, method: string) => invoke<PullRequest>("merge_pr", { id, method }),
+
+  checkTools: () => invoke<ToolCheck>("check_tools"),
+  diagnostics: () => invoke<string>("diagnostics"),
 
   deleteTask: (id: number, force = false) => invoke<void>("delete_task", { id, force }),
 

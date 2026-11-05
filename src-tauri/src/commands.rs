@@ -13,7 +13,7 @@ use hl_core::model::{AgentKind, Id, Project, PullRequest, Session, Task, worktre
 use hl_git::config::WorkspaceConfig;
 use hl_git::diff::DiffSummary;
 use hl_git::worktree::{self, Branch};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::rpi::{self, MoveResult};
 use crate::{AppState, TASK_UPDATED};
@@ -215,7 +215,7 @@ pub async fn delete_task(state: State<'_, AppState>, id: Id, force: Option<bool>
 
 fn emit_task(app: &AppHandle, t: &Task) {
     if let Err(e) = app.emit(TASK_UPDATED, t) {
-        eprintln!("emit failed: {e}");
+        log::warn!("emit failed: {e}");
     }
 }
 
@@ -292,7 +292,7 @@ fn worktree_job(
     };
     let save = |status: &str, log: &str| match db.set_worktree_status(task.id, status, Some(log)) {
         Ok(t) => emit_task(app, &t),
-        Err(e) => eprintln!("task {}: {e}", task.id),
+        Err(e) => log::warn!("task {}: {e}", task.id),
     };
     let c = match worktree::create(repo, cfg, which, &env) {
         Ok(c) => c,
@@ -334,7 +334,7 @@ fn run_setup_step(
 ) {
     let save = |status: &str, log: &str| match db.set_worktree_status(task_id, status, Some(log)) {
         Ok(t) => emit_task(app, &t),
-        Err(e) => eprintln!("task {task_id}: {e}"),
+        Err(e) => log::warn!("task {task_id}: {e}"),
     };
     if command.trim().is_empty() {
         log.push_str(
@@ -706,4 +706,114 @@ pub async fn refresh_pr(app: AppHandle, state: State<'_, AppState>, id: Id) -> R
 #[tauri::command]
 pub async fn merge_pr(app: AppHandle, id: Id, method: String) -> Res<PullRequest> {
     crate::github::merge(&app, id, &method).await
+}
+
+// ---------- tools and diagnostics ----------
+
+#[derive(serde::Serialize)]
+pub struct ToolCheck {
+    pub tools: Vec<crate::diagnostics::Tool>,
+    pub env_error: Option<String>,
+}
+
+/// Which CLIs the app needs are on the login shell's PATH.
+#[tauri::command]
+pub async fn check_tools() -> Res<ToolCheck> {
+    let (tools, env_error) = tokio::task::spawn_blocking(crate::diagnostics::check_tools)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ToolCheck { tools, env_error })
+}
+
+/// A plain-text report for bug reports. Keys, tokens, emails and the home
+/// folder are scrubbed; account names are not included.
+#[tauri::command]
+pub async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> Res<String> {
+    let mut r = vec![format!(
+        "HumanLayer Local {} ({} {})",
+        app.package_info().version,
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )];
+    let macos = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    r.push(format!("macOS: {}", macos.unwrap_or_else(|| "?".into())));
+    if let Ok(dir) = app.path().app_data_dir() {
+        r.push(format!("Data: {}", dir.display()));
+    }
+    r.push(format!(
+        "Schema: {}",
+        state
+            .db
+            .schema_version()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|e| e.to_string())
+    ));
+    if let Ok((p, t, s)) = state.db.counts() {
+        r.push(format!("Projects: {p}, tasks: {t}, sessions: {s}"));
+    }
+    r.push(String::new());
+    r.push("Tools:".into());
+    let check = check_tools().await?;
+    for t in &check.tools {
+        r.push(format!(
+            "- {}: {}",
+            t.name,
+            match (&t.path, &t.version, &t.error) {
+                (None, _, _) => "not found on PATH".to_string(),
+                (Some(p), Some(v), _) => format!("{v} ({p})"),
+                (Some(p), None, Some(e)) => format!("{p}: {e}"),
+                (Some(p), None, None) => p.clone(),
+            }
+        ));
+    }
+    if let Some(e) = &check.env_error {
+        r.push(format!("Shell env: {e}"));
+    }
+    let lin = linear_status(state.clone()).await.ok();
+    r.push(format!(
+        "Linear: {}",
+        match lin {
+            Some(l) if l.has_key => format!(
+                "key saved{}{}",
+                if l.account.is_some() { ", checked" } else { "" },
+                l.last_error
+                    .map(|e| format!("; last error: {e}"))
+                    .unwrap_or_default()
+            ),
+            Some(_) => "no key".into(),
+            None => "?".into(),
+        }
+    ));
+    let gh = crate::github::status(&state).await;
+    r.push(format!(
+        "GitHub: {}{}",
+        match (&gh.login, &gh.source) {
+            (Some(_), Some(s)) => format!("signed in ({s})"),
+            _ => "not signed in".into(),
+        },
+        if gh.has_token {
+            ", token saved in app"
+        } else {
+            ""
+        }
+    ));
+    r.push(String::new());
+    match app
+        .path()
+        .app_log_dir()
+        .ok()
+        .and_then(|d| crate::diagnostics::log_tail(&d, 200))
+    {
+        Some((path, tail)) => {
+            r.push(format!("Last log lines ({path}):"));
+            r.push(tail);
+        }
+        None => r.push("No log file yet.".into()),
+    }
+    let home = std::env::var("HOME").ok();
+    Ok(crate::diagnostics::redact(&r.join("\n"), home.as_deref()))
 }

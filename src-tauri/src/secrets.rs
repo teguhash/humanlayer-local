@@ -87,7 +87,7 @@ impl Secrets {
             match self.get(name) {
                 Ok(Some(k)) => v.push((var, k)),
                 Ok(None) => {}
-                Err(e) => eprintln!("{e}"),
+                Err(e) => log::warn!("{e}"),
             }
         }
         v

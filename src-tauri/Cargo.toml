@@ -30,6 +30,10 @@ hl-git = { path = "crates/git" }
 notify = "8"
 hl-linear = { path = "crates/linear" }
 keyring = { version = "3", features = ["apple-native"] }
+tauri-plugin-log = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+log = "0.4"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

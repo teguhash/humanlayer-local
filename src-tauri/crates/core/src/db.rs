@@ -74,6 +74,18 @@ impl Db {
         self.with(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
     }
 
+    /// Row counts (projects, tasks, sessions) for diagnostics.
+    pub fn counts(&self) -> Result<(i64, i64, i64)> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT (SELECT count(*) FROM projects), (SELECT count(*) FROM tasks),
+                        (SELECT count(*) FROM sessions)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        })
+    }
+
     // ---- projects ----
 
     pub fn create_project(&self, name: &str, repo_path: &str) -> Result<Project> {

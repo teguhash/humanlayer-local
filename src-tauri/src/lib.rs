@@ -1,4 +1,5 @@
 mod commands;
+mod diagnostics;
 mod github;
 mod linear;
 mod rpi;
@@ -43,19 +44,36 @@ struct TauriSink(AppHandle);
 impl Sink for TauriSink {
     fn event(&self, event: &SessionEvent) {
         if let Err(e) = self.0.emit(SESSION_EVENT, event) {
-            eprintln!("emit failed: {e}");
+            log::warn!("emit failed: {e}");
         }
     }
     fn session(&self, session: &Session) {
         if let Err(e) = self.0.emit(SESSION_UPDATED, session) {
-            eprintln!("emit failed: {e}");
+            log::warn!("emit failed: {e}");
         }
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
     let app = tauri::Builder::default()
+        // ~/Library/Logs/<identifier>/humanlayer-local.log, rotated at 5 MB.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("humanlayer-local".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(5_000_000)
+                .rotation_strategy(RotationStrategy::KeepSome(3))
+                .build(),
+        )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -63,6 +81,7 @@ pub fn run() {
             // command is fast. Errors surface later, on first use.
             std::thread::spawn(hl_core::shell_env::get);
 
+            log::info!("HumanLayer Local {} starting", app.package_info().version);
             // ~/Library/Application Support/<identifier>/humanlayer-local.db
             let data = app.path().app_data_dir()?;
             let db = Arc::new(Db::open(&data.join(DB_FILE))?);
@@ -71,7 +90,7 @@ pub fn run() {
             let artifacts = Arc::new(ArtifactStore::new(data.join("artifacts")));
             let plugin = rpi::plugin_dir(app.handle());
             if plugin.is_none() {
-                eprintln!("RPI plugin folder not found; skills will be unavailable");
+                log::warn!("RPI plugin folder not found; skills will be unavailable");
             }
             // Also marks sessions left running by the last app run as interrupted.
             let secrets = Arc::new(secrets::Secrets::new());
@@ -94,7 +113,7 @@ pub fn run() {
             if let Err(e) =
                 rpi::watch_artifacts(app.handle().clone(), db.clone(), artifacts.clone())
             {
-                eprintln!("docs watcher failed to start: {e}");
+                log::warn!("docs watcher failed to start: {e}");
             }
             app.manage(AppState {
                 db,
@@ -154,6 +173,8 @@ pub fn run() {
             commands::list_project_prs,
             commands::refresh_pr,
             commands::merge_pr,
+            commands::check_tools,
+            commands::diagnostics,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

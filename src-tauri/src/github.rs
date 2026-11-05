@@ -293,7 +293,7 @@ pub async fn poll_once(app: &AppHandle) {
     let Ok(prs) = state.db.open_prs() else { return };
     for pr in prs {
         if let Err(e) = refresh(app, &pr).await {
-            eprintln!("PR {}#{}: {e}", pr.repo, pr.number);
+            log::warn!("PR {}#{}: {e}", pr.repo, pr.number);
         }
     }
 }

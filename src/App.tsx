@@ -26,6 +26,7 @@ import {
   type Agent,
   type MoveResult,
   type Notice,
+  type ToolCheck,
   type PullRequest,
   isGithubRef,
   type Project,
@@ -133,6 +134,16 @@ export default function App() {
       un2.then((f) => f());
     };
   }, []);
+
+  // First-run check: tools the app needs on PATH.
+  const [tools, setTools] = useState<ToolCheck | null>(null);
+  useEffect(() => {
+    api
+      .checkTools()
+      .then(setTools)
+      .catch(() => {});
+  }, []);
+  const missing = tools?.tools.filter((t) => !t.version) ?? [];
 
   // PRs opened, polled or merged.
   useEffect(() => {
@@ -351,6 +362,30 @@ export default function App() {
             <button className="cursor-pointer" onClick={() => setError(null)}>
               ×
             </button>
+          </div>
+        )}
+
+        {missing.length > 0 && sel?.kind !== "settings" && (
+          <div
+            className={cn(
+              "flex items-center justify-between gap-2 border p-2",
+              missing.some((t) => t.required)
+                ? "border-destructive bg-destructive/10"
+                : "border-accent bg-accent/10",
+            )}
+          >
+            <span>
+              {missing.some((t) => t.required) ? "Required tools missing: " : "Not found on PATH: "}
+              {missing.map((t) => `${t.name} (${t.purpose})`).join(", ")}.
+            </span>
+            <span className="flex flex-none gap-2">
+              <Button size="xs" variant="outline" onClick={() => setSel({ kind: "settings", id: 0 })}>
+                How to install
+              </Button>
+              <button className="cursor-pointer" onClick={() => setTools(null)}>
+                ×
+              </button>
+            </span>
           </div>
         )}
 

@@ -53,7 +53,7 @@ pub fn prepare_fn(
                 format!("/{rel}")
             };
             if let Err(e) = hl_git::ensure_ignored(cwd, rel, &pattern, &env) {
-                eprintln!("could not add git ignore rule in {}: {e}", cwd.display());
+                log::warn!("could not add git ignore rule in {}: {e}", cwd.display());
             }
         };
         ignore(&format!("{LINK_DIR}/{}", task.slug));
@@ -263,7 +263,7 @@ pub fn on_worktree_done(app: &AppHandle, task_id: Id, ok: bool) {
             && let Err(e) =
                 start_skill_session(&app, task_id, skill, &stage_args(&task, skill)).await
         {
-            eprintln!("task {task_id}: could not start {skill}: {e}");
+            log::warn!("task {task_id}: could not start {skill}: {e}");
         }
     });
 }

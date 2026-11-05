@@ -359,7 +359,7 @@ impl Runtime {
     fn set_status(&self, id: Id, s: &str) {
         match self.db.set_session_status(id, s) {
             Ok(session) => self.sink.session(&session),
-            Err(e) => eprintln!("session {id}: set status {s}: {e}"),
+            Err(e) => log::warn!("session {id}: set status {s}: {e}"),
         }
     }
 
@@ -369,7 +369,7 @@ impl Runtime {
         let ev = match self.db.append_event(id, kind, &payload) {
             Ok(e) => to_session_event(agent, e),
             Err(e) => {
-                eprintln!("session {id}: store {kind} event: {e}");
+                log::warn!("session {id}: store {kind} event: {e}");
                 SessionEvent {
                     session_id: id,
                     seq: -1,

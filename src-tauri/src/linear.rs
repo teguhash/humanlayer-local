@@ -93,7 +93,7 @@ async fn write_ticket(
                 local.insert(url.clone(), rel);
             }
             Err(e) => {
-                eprintln!("{}: image {} failed: {e}", issue.identifier, n + 1);
+                log::warn!("{}: image {} failed: {e}", issue.identifier, n + 1);
                 failed += 1;
             }
         }
@@ -172,12 +172,12 @@ pub async fn poll_once(app: &AppHandle) {
             match state.db.sync_linear_task(task.id, &ticket_of(&issue)) {
                 Ok(t) => {
                     if let Err(e) = write_ticket(&state, &c, &t, &issue).await {
-                        eprintln!("{}: ticket.md: {e}", issue.identifier);
+                        log::warn!("{}: ticket.md: {e}", issue.identifier);
                     }
                     emit_task(app, &t);
                     refresh_docs(app, &state, t.id);
                 }
-                Err(e) => eprintln!("{}: sync failed: {e}", issue.identifier),
+                Err(e) => log::warn!("{}: sync failed: {e}", issue.identifier),
             }
         }
     }
