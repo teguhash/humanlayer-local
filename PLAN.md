@@ -120,10 +120,12 @@ The hardest milestone.
 
 ### M3: Worktrees + diffs (weeks 6–7)
 
-- [ ] `git` crate: create a worktree per task (`git worktree add`), with a branch named from the task
-- [ ] Run setup scripts in new worktrees (see upstream `setup-worktree` skill)
-- [ ] Diff view: changed files and per-file diff against the base branch
-- [ ] Remove the worktree when a task is archived, after confirming
+- [x] `git` crate: create a worktree per task (`git worktree add`), with a branch named from the task
+- [x] Run setup scripts in new worktrees (see upstream `setup-worktree` skill). Reads the same `.humanlayer/workspace.json` / `workspace.local.json` (primary repo entry only): pathTemplate, branchTemplate, sourceRef, copyGlobs, setupCommand, disabled
+- [x] Diff view: changed files and per-file diff against the base branch (merge base, so later commits on the base branch don't show; includes uncommitted and untracked files)
+- [x] Remove the worktree when a task is archived, after confirming (lists uncommitted files and needs an explicit "discard"; the branch is kept and Restore checks it out again)
+
+Note: worktrees are created on request ("Create worktree" on the task), not on task creation, so research/plan sessions can run in the repo. A session's folder is fixed at its first turn because Claude keys `--resume` by folder.
 
 ### M4: Board + RPI flow (weeks 8–10)
 

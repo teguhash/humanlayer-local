@@ -16,7 +16,25 @@ export type Task = {
   github_issue: string | null;
   created_at: string;
   updated_at: string;
+  branch: string | null;
+  base_ref: string | null;
+  base_commit: string | null;
+  worktree_status: WorktreeStatus | null;
+  worktree_log: string | null;
+  archived_at: string | null;
 };
+
+export type WorktreeStatus = "creating" | "setting_up" | "ready" | "setup_failed" | "failed";
+
+// Mirrors hl_git::diff.
+export type FileChange = {
+  path: string;
+  old_path: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "copied" | "type_changed" | "untracked";
+  additions: number | null;
+  deletions: number | null;
+};
+export type DiffSummary = { base: string; base_commit: string; files: FileChange[] };
 
 export type Session = {
   id: number;
@@ -28,6 +46,8 @@ export type Session = {
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
+  /** Folder the CLI runs in; set at the first turn. */
+  cwd: string | null;
 };
 
 export type TokenUsage = {
@@ -90,7 +110,16 @@ export const api = {
   listTasks: (projectId: number) => invoke<Task[]>("list_tasks", { projectId }),
   createTask: (projectId: number, title: string) =>
     invoke<Task>("create_task", { projectId, title }),
-  deleteTask: (id: number) => invoke<void>("delete_task", { id }),
+  deleteTask: (id: number, force = false) => invoke<void>("delete_task", { id, force }),
+
+  createWorktree: (taskId: number) => invoke<Task>("create_worktree", { taskId }),
+  retrySetup: (taskId: number) => invoke<Task>("retry_setup", { taskId }),
+  worktreeDirtyFiles: (taskId: number) => invoke<string[]>("worktree_dirty_files", { taskId }),
+  getDiff: (taskId: number) => invoke<DiffSummary>("get_diff", { taskId }),
+  getFileDiff: (taskId: number, path: string, oldPath: string | null) =>
+    invoke<string>("get_file_diff", { taskId, path, oldPath }),
+  archiveTask: (taskId: number, force: boolean) => invoke<Task>("archive_task", { taskId, force }),
+  unarchiveTask: (taskId: number) => invoke<Task>("unarchive_task", { taskId }),
 
   listSessions: (taskId: number) => invoke<Session[]>("list_sessions", { taskId }),
   createSession: (taskId: number, agent: Agent) =>

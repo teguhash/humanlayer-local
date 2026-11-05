@@ -8,7 +8,7 @@ import {
   ListTodo,
   Plus,
   TerminalSquare,
-
+  ArchiveRestore,
 } from "lucide-react";
 import { api, type Agent, type Project, type Session, type Task } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDelete } from "@/components/ConfirmDelete";
 import { SessionTranscript } from "@/components/SessionTranscript";
+import { ArchiveTask, WorktreePanel } from "@/components/Worktree";
+import { DiffView } from "@/components/DiffView";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 
@@ -70,6 +72,18 @@ export default function App() {
     const un = listen<Session>("session-updated", ({ payload: s }) =>
       setSessions((m) =>
         m[s.task_id] ? { ...m, [s.task_id]: m[s.task_id].map((x) => (x.id === s.id ? s : x)) } : m,
+      ),
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // Worktree progress and archive changes.
+  useEffect(() => {
+    const un = listen<Task>("task-updated", ({ payload: t }) =>
+      setTasks((m) =>
+        m[t.project_id] ? { ...m, [t.project_id]: m[t.project_id].map((x) => (x.id === t.id ? t : x)) } : m,
       ),
     );
     return () => {
@@ -180,7 +194,9 @@ export default function App() {
                 label={p.name}
               />
               {openProjects.has(p.id) &&
-                (tasks[p.id] ?? []).map((t) => (
+                (tasks[p.id] ?? [])
+                  .filter((t) => !t.archived_at || isSel("task", t.id))
+                  .map((t) => (
                   <div key={t.id}>
                     <TreeRow
                       depth={1}
@@ -190,6 +206,7 @@ export default function App() {
                       onSelect={() => setSel({ kind: "task", id: t.id })}
                       icon={<ListTodo className="size-4" />}
                       label={t.title}
+                      status={t.archived_at ? "archived" : wtLabel(t)}
                     />
                     {openTasks.has(t.id) &&
                       (sessions[t.id] ?? []).map((s) => (
@@ -248,6 +265,7 @@ export default function App() {
             onAddSession={(a) => addSession(sel.id, a)}
             onOpenSession={(id) => setSel({ kind: "session", id })}
             onDelete={() => removeTask(task(sel.id)!)}
+            onArchived={() => setSel({ kind: "project", id: task(sel.id)!.project_id })}
           />
         )}
 
@@ -257,7 +275,7 @@ export default function App() {
             const s = session(sel.id)!;
             const t = task(s.task_id);
             const p = t && project(t.project_id);
-            const cwd = t?.worktree_path ?? p?.repo_path;
+            const cwd = s.cwd ?? t?.worktree_path ?? p?.repo_path;
             return (
               <SessionView key={s.id} session={s} task={t} cwd={cwd} onDelete={() => removeSession(s)} />
             );
@@ -309,6 +327,9 @@ function TreeRow(props: {
             props.status === "running" && "text-[var(--terminal-success)] animate-pulse",
             props.status === "failed" && "text-destructive",
             props.status === "interrupted" && "text-[var(--terminal-warning)]",
+            (props.status === "setting up" || props.status === "creating") && "animate-pulse",
+            props.status === "archived" && "text-muted-foreground",
+            props.status === "setup failed" && "text-destructive",
           )}
         >
           {props.status}
@@ -320,12 +341,12 @@ function TreeRow(props: {
 
 function Header(props: { title: string; sub?: React.ReactNode; actions?: React.ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-3 border-b pb-3">
-      <div className="min-w-0">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+      <div className="min-w-48 flex-1">
         <h1 className="truncate text-lg font-semibold">{props.title}</h1>
         {props.sub && <div className="truncate text-muted-foreground">{props.sub}</div>}
       </div>
-      <div className="flex flex-none gap-2">{props.actions}</div>
+      <div className="flex flex-wrap gap-2">{props.actions}</div>
     </div>
   );
 }
@@ -339,7 +360,10 @@ function ProjectView(props: {
 }) {
   const [title, setTitle] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const p = props.project;
+  const active = props.tasks.filter((t) => !t.archived_at);
+  const archived = props.tasks.filter((t) => t.archived_at);
   return (
     <>
       <Header
@@ -372,13 +396,43 @@ function ProjectView(props: {
       {err && <p className="text-destructive">{err}</p>}
       <List
         empty="No tasks yet."
-        items={props.tasks.map((t) => ({
+        items={active.map((t) => ({
           id: t.id,
           label: t.title,
-          meta: <Badge variant="outline">{t.stage}</Badge>,
+          meta: (
+            <span className="flex items-center gap-2">
+              {wtLabel(t) && <span className="text-muted-foreground">{wtLabel(t)}</span>}
+              <Badge variant="outline">{t.stage}</Badge>
+            </span>
+          ),
         }))}
         onOpen={props.onOpenTask}
       />
+      {archived.length > 0 && (
+        <>
+          <button
+            className="cursor-pointer self-start text-muted-foreground hover:text-foreground"
+            onClick={() => setShowArchived((v) => !v)}
+          >
+            {showArchived ? "Hide" : "Show"} archived ({archived.length})
+          </button>
+          {showArchived && (
+            <List
+              empty=""
+              items={archived.map((t) => ({
+                id: t.id,
+                label: t.title,
+                meta: (
+                  <span className="text-muted-foreground">
+                    archived {new Date(t.archived_at!).toLocaleDateString()}
+                  </span>
+                ),
+              }))}
+              onOpen={props.onOpenTask}
+            />
+          )}
+        </>
+      )}
     </>
   );
 }
@@ -390,8 +444,14 @@ function TaskView(props: {
   onAddSession: (agent: Agent) => void;
   onOpenSession: (id: number) => void;
   onDelete: () => Promise<void>;
+  onArchived: () => void;
 }) {
   const t = props.task;
+  const [tab, setTab] = useState<"sessions" | "changes">("sessions");
+  const [err, setErr] = useState<string | null>(null);
+  const hasWt = !!t.worktree_path && t.worktree_status !== "creating";
+  // Refresh the diff whenever a session of this task changes status.
+  const sessionKey = props.sessions.map((s) => s.status).join();
   return (
     <>
       <Header
@@ -399,39 +459,100 @@ function TaskView(props: {
         sub={
           <>
             {props.project?.name} · <Badge variant="outline">{t.stage}</Badge>
+            {t.archived_at && <> · archived {new Date(t.archived_at).toLocaleString()}</>}
           </>
         }
         actions={
-          <>
-            <Button size="sm" onClick={() => props.onAddSession("claude")}>
-              <Plus /> Claude session
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => props.onAddSession("codex")}>
-              <Plus /> Codex session
-            </Button>
-            <ConfirmDelete
-              what={`task “${t.title}”`}
-              detail="This deletes its sessions too."
-              onConfirm={props.onDelete}
-            />
-          </>
+          t.archived_at ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => api.unarchiveTask(t.id).catch((e) => setErr(String(e)))}
+              >
+                <ArchiveRestore /> Restore
+              </Button>
+              <ConfirmDelete
+                what={`task “${t.title}”`}
+                detail="This deletes its sessions too. Its branch is kept."
+                onConfirm={props.onDelete}
+              />
+            </>
+          ) : (
+            <>
+              <Button size="sm" onClick={() => props.onAddSession("claude")}>
+                <Plus /> Claude session
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => props.onAddSession("codex")}>
+                <Plus /> Codex session
+              </Button>
+              <ArchiveTask task={t} onDone={props.onArchived} />
+              <ConfirmDelete
+                what={`task “${t.title}”`}
+                detail={
+                  t.worktree_path
+                    ? `This deletes its sessions and removes the worktree folder ${t.worktree_path}. Branch ${t.branch} is kept. Deleting fails if the worktree has uncommitted changes; archive instead to review them.`
+                    : "This deletes its sessions too."
+                }
+                onConfirm={props.onDelete}
+              />
+            </>
+          )
         }
       />
-      <List
-        empty="No sessions yet."
-        items={props.sessions.map((s) => ({
-          id: s.id,
-          label: `${s.agent_kind} #${s.id}`,
-          meta: (
-            <span className="text-muted-foreground">
-              {s.status} · {new Date(s.created_at).toLocaleString()}
-            </span>
-          ),
-        }))}
-        onOpen={props.onOpenSession}
-      />
+      {err && <p className="text-destructive">{err}</p>}
+      <WorktreePanel task={t} repoPath={props.project?.repo_path} />
+      <div className="flex gap-1 border-b">
+        {(["sessions", "changes"] as const).map((k) => (
+          <button
+            key={k}
+            disabled={k === "changes" && !hasWt}
+            title={k === "changes" && !hasWt ? "Create a worktree to track this task's changes" : undefined}
+            className={cn(
+              "-mb-px cursor-pointer border-b-2 border-transparent px-3 py-1 capitalize disabled:cursor-not-allowed disabled:opacity-50",
+              tab === k && "border-accent text-accent",
+            )}
+            onClick={() => setTab(k)}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
+      {tab === "changes" && hasWt ? (
+        <DiffView taskId={t.id} refreshKey={sessionKey} />
+      ) : (
+        <List
+          empty="No sessions yet."
+          items={props.sessions.map((s) => ({
+            id: s.id,
+            label: `${s.agent_kind} #${s.id}`,
+            meta: (
+              <span className="text-muted-foreground">
+                {s.status} · {new Date(s.created_at).toLocaleString()}
+              </span>
+            ),
+          }))}
+          onOpen={props.onOpenSession}
+        />
+      )}
     </>
   );
+}
+
+/** Short worktree state for list rows; empty when there is nothing to say. */
+function wtLabel(t: Task): string {
+  switch (t.worktree_status) {
+    case "creating":
+      return "creating";
+    case "setting_up":
+      return "setting up";
+    case "setup_failed":
+      return "setup failed";
+    case "failed":
+      return "worktree failed";
+    default:
+      return "";
+  }
 }
 
 function SessionView(props: {
