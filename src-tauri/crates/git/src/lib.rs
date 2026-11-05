@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod diff;
+pub mod github;
 pub mod worktree;
 
 use std::collections::HashMap;

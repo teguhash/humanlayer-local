@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::artifacts::ArtifactFile;
 use crate::model::{
-    AgentKind, Artifact, Event, Id, LinearTicket, Project, Session, Task, stage, status,
-    worktree_status,
+    AgentKind, Artifact, Event, Id, LinearTicket, Project, PullRequest, Session, Task, stage,
+    status, worktree_status,
 };
 use crate::slug::slugify;
 
@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_board.sql"),
     include_str!("../migrations/0004_agents.sql"),
     include_str!("../migrations/0005_linear.sql"),
+    include_str!("../migrations/0006_github.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -248,6 +249,108 @@ impl Db {
                 params![task_id, path, comment_id],
             )?;
             Ok(())
+        })
+    }
+
+    /// A task for a GitHub issue (`issue_ref` is "owner/repo#12").
+    pub fn create_github_task(
+        &self,
+        project_id: Id,
+        issue_ref: &str,
+        number: u64,
+        title: &str,
+        description: &str,
+        url: &str,
+    ) -> Result<Task> {
+        let title = non_empty(title, "Task title")?;
+        self.with(|c| {
+            let slug = free_slug(c, project_id, &slugify(&format!("gh-{number} {title}")))?;
+            let res = c.query_row(
+                "INSERT INTO tasks (project_id, title, description, slug, position,
+                   github_issue, github_issue_url)
+                 VALUES (?1, ?2, ?3, ?4, (SELECT coalesce(max(position), -1) + 1
+                                  FROM tasks WHERE project_id = ?1 AND stage = 'backlog'),
+                   ?5, ?6)
+                 RETURNING *",
+                params![project_id, title, description.trim(), slug, issue_ref, url],
+                task_row,
+            );
+            match res {
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation
+                        && e.extended_code != rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY =>
+                {
+                    Err(Error::Invalid(format!(
+                        "{issue_ref} is already a task in this project."
+                    )))
+                }
+                r => r.map_err(|e| fk_to_not_found(e, "Project")),
+            }
+        })
+    }
+
+    /// Insert or refresh a PR (keyed by repo and number).
+    pub fn upsert_pr(&self, task_id: Id, p: &PullRequest) -> Result<PullRequest> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "INSERT INTO pull_requests (task_id, repo, number, url, title, state, is_draft,
+                   mergeable, merge_state, review_state, checks_state, head_ref, base_ref)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT (repo, number) DO UPDATE SET task_id = ?1, url = ?4, title = ?5,
+                   state = ?6, is_draft = ?7, mergeable = ?8, merge_state = ?9,
+                   review_state = ?10, checks_state = ?11, head_ref = ?12, base_ref = ?13,
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 RETURNING *",
+                params![
+                    task_id,
+                    p.repo,
+                    p.number,
+                    p.url,
+                    p.title,
+                    p.state,
+                    p.is_draft,
+                    p.mergeable,
+                    p.merge_state,
+                    p.review_state,
+                    p.checks_state,
+                    p.head_ref,
+                    p.base_ref
+                ],
+                pr_row,
+            )?)
+        })
+    }
+
+    /// PRs of a project's tasks, newest first.
+    pub fn project_prs(&self, project_id: Id) -> Result<Vec<PullRequest>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT pr.* FROM pull_requests pr JOIN tasks t ON t.id = pr.task_id
+                 WHERE t.project_id = ?1 ORDER BY pr.id DESC",
+            )?;
+            let rows = st.query_map([project_id], pr_row)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Open PRs of tasks that are not archived (polled).
+    pub fn open_prs(&self) -> Result<Vec<PullRequest>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT pr.* FROM pull_requests pr JOIN tasks t ON t.id = pr.task_id
+                 WHERE (pr.state IS NULL OR pr.state = 'OPEN') AND t.archived_at IS NULL
+                 ORDER BY pr.id",
+            )?;
+            let rows = st.query_map([], pr_row)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    pub fn get_pr(&self, id: Id) -> Result<PullRequest> {
+        self.with(|c| {
+            c.query_row("SELECT * FROM pull_requests WHERE id = ?1", [id], pr_row)
+                .optional()?
+                .ok_or(Error::NotFound("Pull request"))
         })
     }
 
@@ -726,10 +829,34 @@ fn task_row(r: &Row) -> rusqlite::Result<Task> {
         linear_url: r.get("linear_url")?,
         linear_state: r.get("linear_state")?,
         linear_updated_at: r.get("linear_updated_at")?,
+        github_issue_url: r.get("github_issue_url")?,
         agent: r
             .get::<_, Option<String>>("agent")?
             .map(agent_col)
             .transpose()?,
+    })
+}
+
+fn pr_row(r: &Row) -> rusqlite::Result<PullRequest> {
+    let text = |k: &str| -> rusqlite::Result<String> {
+        Ok(r.get::<_, Option<String>>(k)?.unwrap_or_default())
+    };
+    Ok(PullRequest {
+        id: r.get("id")?,
+        task_id: r.get("task_id")?,
+        repo: r.get("repo")?,
+        number: r.get("number")?,
+        url: text("url")?,
+        title: text("title")?,
+        state: text("state")?,
+        is_draft: r.get("is_draft")?,
+        mergeable: text("mergeable")?,
+        merge_state: text("merge_state")?,
+        review_state: text("review_state")?,
+        checks_state: text("checks_state")?,
+        head_ref: text("head_ref")?,
+        base_ref: text("base_ref")?,
+        updated_at: r.get("updated_at")?,
     })
 }
 
@@ -865,6 +992,47 @@ mod tests {
         db.set_linear_post(t.id, "a.md", "c1").unwrap();
         db.set_linear_post(t.id, "a.md", "c2").unwrap();
         assert_eq!(db.linear_post(t.id, "a.md").unwrap().as_deref(), Some("c2"));
+    }
+
+    #[test]
+    fn github_issue_task_and_prs() {
+        let db = db();
+        let p = db.create_project("Demo", "/repo").unwrap();
+        let t = db
+            .create_github_task(
+                p.id,
+                "o/r#12",
+                12,
+                "Crash on start",
+                " body ",
+                "https://github.com/o/r/issues/12",
+            )
+            .unwrap();
+        assert_eq!(
+            (t.slug.as_str(), t.description.as_str()),
+            ("gh-12-crash-on-start", "body")
+        );
+        assert_eq!(t.github_issue.as_deref(), Some("o/r#12"));
+        assert!(
+            db.create_github_task(p.id, "o/r#12", 12, "x", "", "u")
+                .is_err()
+        );
+
+        let mut pr = PullRequest {
+            repo: "o/r".into(),
+            number: 5,
+            state: "OPEN".into(),
+            checks_state: "pending".into(),
+            ..Default::default()
+        };
+        let a = db.upsert_pr(t.id, &pr).unwrap();
+        assert_eq!(db.open_prs().unwrap().len(), 1);
+        pr.state = "MERGED".into();
+        let b = db.upsert_pr(t.id, &pr).unwrap();
+        assert_eq!((a.id, b.state.as_str()), (b.id, "MERGED"));
+        assert!(db.open_prs().unwrap().is_empty());
+        assert_eq!(db.project_prs(p.id).unwrap().len(), 1);
+        assert_eq!(db.get_pr(a.id).unwrap().number, 5);
     }
 
     #[test]

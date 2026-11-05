@@ -1,4 +1,5 @@
 mod commands;
+mod github;
 mod linear;
 mod rpi;
 mod secrets;
@@ -21,6 +22,8 @@ pub const TASK_UPDATED: &str = "task-updated";
 pub const SESSION_CREATED: &str = "session-created";
 /// Payload: task id whose docs list changed.
 pub const ARTIFACTS_UPDATED: &str = "artifacts-updated";
+/// Payload: `PullRequest` (opened, polled, merged).
+pub const PR_UPDATED: &str = "pr-updated";
 /// Payload: `linear::Notice` for the notice bar.
 pub const NOTICE: &str = "notice";
 const DB_FILE: &str = "humanlayer-local.db";
@@ -72,17 +75,13 @@ pub fn run() {
             }
             // Also marks sessions left running by the last app run as interrupted.
             let secrets = Arc::new(secrets::Secrets::new());
-            // Sessions get the shell env plus the Linear key, so the `linear`
-            // CLI works inside them with the same key.
+            // Sessions get the shell env plus saved keys (LINEAR_API_KEY,
+            // GH_TOKEN), so the `linear` and `gh` CLIs work inside them.
             let env_secrets = secrets.clone();
             let env = move || {
                 let (mut env, err) = hl_core::shell_env::get();
-                match env_secrets.linear_key() {
-                    Ok(Some(k)) => {
-                        env.insert("LINEAR_API_KEY".into(), k);
-                    }
-                    Ok(None) => {}
-                    Err(e) => eprintln!("{e}"),
+                for (k, v) in env_secrets.env_vars() {
+                    env.insert(k.into(), v);
                 }
                 (env, err)
             };
@@ -106,6 +105,7 @@ pub fn run() {
                 linear: linear::LinearState::default(),
             });
             linear::start_polling(app.handle().clone());
+            github::start_polling(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -146,6 +146,14 @@ pub fn run() {
             commands::sync_linear_now,
             commands::post_doc_to_linear,
             commands::read_artifact_data_url,
+            commands::github_status,
+            commands::set_github_token,
+            commands::clear_github_token,
+            commands::import_github_issue,
+            commands::open_pr,
+            commands::list_project_prs,
+            commands::refresh_pr,
+            commands::merge_pr,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

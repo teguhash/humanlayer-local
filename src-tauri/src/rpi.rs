@@ -370,6 +370,7 @@ mod tests {
             linear_url: None,
             linear_state: None,
             linear_updated_at: None,
+            github_issue_url: None,
         };
         let claude = |skill| skill_prompt(AgentKind::Claude, skill, &stage_args(&t, skill));
         assert_eq!(claude("create-research"), "/rpi:create-research Add login");

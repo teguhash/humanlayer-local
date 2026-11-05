@@ -235,6 +235,7 @@ mod tests {
             linear_url: None,
             linear_state: None,
             linear_updated_at: None,
+            github_issue_url: None,
         }
     }
 

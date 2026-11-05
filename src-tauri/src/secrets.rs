@@ -2,59 +2,94 @@
 //! identifier). Values are cached in memory after the first read so the
 //! Keychain is asked once per app run. Never log a value.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 const SERVICE: &str = "dev.teguh.humanlayerlocal";
 pub const LINEAR_API_KEY: &str = "linear-api-key";
+pub const GITHUB_TOKEN: &str = "github-token";
 
 pub struct Secrets {
-    linear: Mutex<Option<Option<String>>>,
+    cache: Mutex<HashMap<&'static str, Option<String>>>,
+}
+
+impl Default for Secrets {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Secrets {
     pub fn new() -> Self {
         Self {
-            linear: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
-    fn entry() -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, LINEAR_API_KEY).map_err(|e| format!("Keychain: {e}"))
+    fn entry(name: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(SERVICE, name).map_err(|e| format!("Keychain: {e}"))
     }
 
-    /// The Linear API key, if one is saved.
-    pub fn linear_key(&self) -> Result<Option<String>, String> {
-        let mut cache = self.linear.lock().unwrap();
-        if let Some(v) = cache.as_ref() {
+    pub fn get(&self, name: &'static str) -> Result<Option<String>, String> {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(v) = cache.get(name) {
             return Ok(v.clone());
         }
-        let v = match Self::entry()?.get_password() {
+        let v = match Self::entry(name)?.get_password() {
             Ok(k) => Some(k),
             Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                return Err(format!(
-                    "Could not read the Linear key from the Keychain: {e}"
-                ));
-            }
+            Err(e) => return Err(format!("Could not read {name} from the Keychain: {e}")),
         };
-        *cache = Some(v.clone());
+        cache.insert(name, v.clone());
         Ok(v)
     }
 
-    pub fn set_linear_key(&self, key: &str) -> Result<(), String> {
-        Self::entry()?
-            .set_password(key)
-            .map_err(|e| format!("Could not save the Linear key to the Keychain: {e}"))?;
-        *self.linear.lock().unwrap() = Some(Some(key.to_string()));
+    pub fn set(&self, name: &'static str, value: &str) -> Result<(), String> {
+        Self::entry(name)?
+            .set_password(value)
+            .map_err(|e| format!("Could not save {name} to the Keychain: {e}"))?;
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(name, Some(value.to_string()));
         Ok(())
     }
 
-    pub fn clear_linear_key(&self) -> Result<(), String> {
-        match Self::entry()?.delete_credential() {
+    pub fn clear(&self, name: &'static str) -> Result<(), String> {
+        match Self::entry(name)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(format!("Could not remove the Linear key: {e}")),
+            Err(e) => return Err(format!("Could not remove {name}: {e}")),
         }
-        *self.linear.lock().unwrap() = Some(None);
+        self.cache.lock().unwrap().insert(name, None);
         Ok(())
+    }
+
+    pub fn linear_key(&self) -> Result<Option<String>, String> {
+        self.get(LINEAR_API_KEY)
+    }
+
+    pub fn set_linear_key(&self, key: &str) -> Result<(), String> {
+        self.set(LINEAR_API_KEY, key)
+    }
+
+    pub fn clear_linear_key(&self) -> Result<(), String> {
+        self.clear(LINEAR_API_KEY)
+    }
+
+    /// Env vars that carry saved credentials into gh, the linear CLI and
+    /// agent sessions.
+    pub fn env_vars(&self) -> Vec<(&'static str, String)> {
+        let mut v = vec![];
+        for (name, var) in [
+            (LINEAR_API_KEY, "LINEAR_API_KEY"),
+            (GITHUB_TOKEN, "GH_TOKEN"),
+        ] {
+            match self.get(name) {
+                Ok(Some(k)) => v.push((var, k)),
+                Ok(None) => {}
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+        v
     }
 }

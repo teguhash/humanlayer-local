@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use hl_agents::{Decision, SessionUsage, Transcript};
 use hl_core::Db;
-use hl_core::model::{AgentKind, Id, Project, Session, Task, worktree_status as ws};
+use hl_core::model::{AgentKind, Id, Project, PullRequest, Session, Task, worktree_status as ws};
 use hl_git::config::WorkspaceConfig;
 use hl_git::diff::DiffSummary;
 use hl_git::worktree::{self, Branch};
@@ -653,4 +653,57 @@ pub async fn read_artifact_data_url(
     path: String,
 ) -> Res<String> {
     state.artifacts.read_data_url(task_id, &path)
+}
+
+// ---------- GitHub ----------
+
+#[tauri::command]
+pub async fn github_status(state: State<'_, AppState>) -> Res<crate::github::GithubStatus> {
+    Ok(crate::github::status(&state).await)
+}
+
+/// Check a token with GitHub, then save it to the Keychain. gh then uses
+/// it (as GH_TOKEN) instead of its own login.
+#[tauri::command]
+pub async fn set_github_token(
+    state: State<'_, AppState>,
+    token: String,
+) -> Res<crate::github::GithubStatus> {
+    crate::github::set_token(&state, &token).await?;
+    Ok(crate::github::status(&state).await)
+}
+
+#[tauri::command]
+pub async fn clear_github_token(state: State<'_, AppState>) -> Res<crate::github::GithubStatus> {
+    state.secrets.clear(crate::secrets::GITHUB_TOKEN)?;
+    Ok(crate::github::status(&state).await)
+}
+
+#[tauri::command]
+pub async fn import_github_issue(app: AppHandle, project_id: Id, reference: String) -> Res<Task> {
+    let t = crate::github::import_issue(&app, project_id, &reference).await?;
+    emit_task(&app, &t);
+    Ok(t)
+}
+
+#[tauri::command]
+pub async fn open_pr(app: AppHandle, task_id: Id, draft: Option<bool>) -> Res<PullRequest> {
+    crate::github::open_pr(&app, task_id, draft.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn list_project_prs(state: State<'_, AppState>, project_id: Id) -> Res<Vec<PullRequest>> {
+    state.db.project_prs(project_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn refresh_pr(app: AppHandle, state: State<'_, AppState>, id: Id) -> Res<PullRequest> {
+    let pr = state.db.get_pr(id).map_err(err)?;
+    crate::github::refresh(&app, &pr).await
+}
+
+/// Merge with `method`: merge, squash or rebase.
+#[tauri::command]
+pub async fn merge_pr(app: AppHandle, id: Id, method: String) -> Res<PullRequest> {
+    crate::github::merge(&app, id, &method).await
 }

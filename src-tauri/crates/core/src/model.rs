@@ -44,6 +44,8 @@ pub struct Task {
     /// Workflow state name and ticket updatedAt, as last synced.
     pub linear_state: Option<String>,
     pub linear_updated_at: Option<String>,
+    /// GitHub issue link (`github_issue` is "owner/repo#12").
+    pub github_issue_url: Option<String>,
     /// Overrides the project's `default_agent`. None = use the default.
     pub agent: Option<AgentKind>,
 }
@@ -162,5 +164,31 @@ pub struct LinearTicket {
     pub description: String,
     pub url: String,
     pub state: String,
+    pub updated_at: String,
+}
+
+/// A task's pull request, as last polled.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct PullRequest {
+    pub id: Id,
+    pub task_id: Id,
+    /// owner/name
+    pub repo: String,
+    pub number: i64,
+    pub url: String,
+    pub title: String,
+    /// OPEN | CLOSED | MERGED
+    pub state: String,
+    pub is_draft: bool,
+    /// MERGEABLE | CONFLICTING | UNKNOWN
+    pub mergeable: String,
+    /// gh mergeStateStatus: CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, ...
+    pub merge_state: String,
+    /// APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | "" (none needed)
+    pub review_state: String,
+    /// passing | failing | pending | none
+    pub checks_state: String,
+    pub head_ref: String,
+    pub base_ref: String,
     pub updated_at: String,
 }
