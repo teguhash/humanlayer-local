@@ -158,7 +158,7 @@ Note: worktrees are created on request ("Create worktree" on the task), not on t
 - [x] Import an issue as a task (`#12`, `owner/repo#12` or URL; `github-issue.md` in the docs folder)
 - [x] Open a PR from the task's worktree (`gh pr create`) and link it to the task (pushes the branch first; refuses with uncommitted files)
 - [x] Poll open PRs every 30–60 seconds: checks, reviews, mergeable state (every 45 s; a merged PR moves the task to Done)
-- [x] Show PR state on the board card; merge button calls `gh pr merge` (squash, merge or rebase; the branch is kept)
+- [x] Show PR state on the board card; merge button calls `gh pr merge` (squash, merge or rebase; the branch is kept; M7 flow confirmed by hand)
 
 ### M8: Packaging (weeks 17–18)
 
