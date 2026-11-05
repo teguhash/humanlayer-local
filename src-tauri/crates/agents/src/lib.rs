@@ -24,7 +24,9 @@ pub use transcript::{Decision, Item, SessionUsage};
 pub trait Agent: Send + Sync {
     fn binary(&self) -> &'static str;
     /// Arguments for a new process; `resume` is the CLI's own session id.
-    fn args(&self, cwd: &str, resume: Option<&str>) -> Vec<String>;
+    /// `extra` are options from the app's prepare hook (plugins, prompts);
+    /// each agent puts them where its CLI accepts options.
+    fn args(&self, cwd: &str, resume: Option<&str>, extra: Vec<String>) -> Vec<String>;
     /// One process serves many turns (Claude) or one turn (Codex).
     fn persistent(&self) -> bool;
     /// Lines written right after spawn.

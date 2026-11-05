@@ -92,9 +92,7 @@ pub fn ensure_ignored(cwd: &Path, rel: &str, pattern: &str, env: &Env) -> Result
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!(
-        "# HumanLayer Local task docs (linked folders)\n{pattern}\n"
-    ));
+    text.push_str(&format!("# HumanLayer Local (linked folders)\n{pattern}\n"));
     std::fs::write(&path, text).map_err(|e| Error::Git(e.to_string()))
 }
 

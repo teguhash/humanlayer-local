@@ -63,23 +63,7 @@ impl ArtifactStore {
     pub fn link_into(&self, task: &Task, cwd: &Path) -> Result<PathBuf, String> {
         let target = self.ensure(task).map_err(|e| e.to_string())?;
         let link = cwd.join(LINK_DIR).join(&task.slug);
-        std::fs::create_dir_all(link.parent().unwrap()).map_err(|e| e.to_string())?;
-        match std::fs::symlink_metadata(&link) {
-            Ok(m) if m.file_type().is_symlink() => {
-                if std::fs::read_link(&link).ok().as_deref() == Some(target.as_path()) {
-                    return Ok(link);
-                }
-                std::fs::remove_file(&link).map_err(|e| e.to_string())?;
-            }
-            Ok(_) => {
-                return Err(format!(
-                    "{} already exists and is not managed by HumanLayer Local. Move it away to use this task's docs here.",
-                    link.display()
-                ));
-            }
-            Err(_) => {}
-        }
-        std::os::unix::fs::symlink(&target, &link).map_err(|e| e.to_string())?;
+        ensure_link(&target, &link)?;
         Ok(link)
     }
 
@@ -178,6 +162,28 @@ pub fn kind_of(name: &str) -> &'static str {
     "other"
 }
 
+/// Make `link` a symlink to `target`, replacing a stale link. Refuses to
+/// touch a real file or folder at `link`.
+pub fn ensure_link(target: &Path, link: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(link.parent().unwrap()).map_err(|e| e.to_string())?;
+    match std::fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() => {
+            if std::fs::read_link(link).ok().as_deref() == Some(target) {
+                return Ok(());
+            }
+            std::fs::remove_file(link).map_err(|e| e.to_string())?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "{} already exists and is not managed by HumanLayer Local. Move it away to use it here.",
+                link.display()
+            ));
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +208,7 @@ mod tests {
             worktree_status: None,
             worktree_log: None,
             archived_at: None,
+            agent: None,
         }
     }
 

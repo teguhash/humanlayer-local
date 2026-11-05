@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::runtime::EnvFn;
 use crate::transcript::{Decision, Item};
-use crate::{Runtime, SessionEvent, Sink, claude, event_type, protocol};
+use crate::{Runtime, SessionEvent, Sink, claude, codex, event_type, protocol};
 
 // ---------- pure protocol tests ----------
 
@@ -94,12 +94,44 @@ fn session_permissions_are_always_session_scoped() {
 #[test]
 fn codex_args_and_parse() {
     let p = protocol(AgentKind::Codex);
-    let fresh = p.args("/w", None);
+    let extra = || vec!["-c".to_string(), "x=1".to_string()];
+    let fresh = p.args("/w", None, extra());
     assert!(fresh.windows(2).any(|w| w == ["--cd", "/w"]));
-    let resumed = p.args("/w", Some("T1"));
+    assert!(
+        fresh
+            .windows(2)
+            .any(|w| w == ["--sandbox", "workspace-write"])
+    );
+    // Options come before the positional prompt.
+    assert_eq!(&fresh[fresh.len() - 3..], ["-c", "x=1", "-"]);
+    let resumed = p.args("/w", Some("T1"), extra());
     assert_eq!(&resumed[..2], ["exec", "resume"]);
-    assert_eq!(resumed.last().unwrap(), "-");
-    assert!(resumed.contains(&"T1".to_string()));
+    assert!(resumed.contains(&"sandbox_mode=\"workspace-write\"".to_string()));
+    assert_eq!(&resumed[resumed.len() - 4..], ["-c", "x=1", "T1", "-"]);
+    assert_eq!(
+        codex::config_string("developer_instructions", "a \"b\"\nc"),
+        ["-c", "developer_instructions=\"a \\\"b\\\"\\nc\""]
+    );
+    let fc = json!({"type":"item.completed","item":{"id":"i3","type":"file_change","status":"completed",
+        "changes":[{"path":"/w/a.txt","kind":"update"},{"path":"/w/b.txt","kind":"add"}]}});
+    match &p.parse(&fc)[0] {
+        Item::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => {
+            assert_eq!(tool_use_id, "i3");
+            assert_eq!(content, "update /w/a.txt\nadd /w/b.txt");
+            assert!(!is_error);
+        }
+        other => panic!("{other:?}"),
+    }
+    let todo = json!({"type":"item.updated","item":{"id":"i4","type":"todo_list",
+        "items":[{"text":"one","completed":true},{"text":"two","completed":false}]}});
+    match &p.parse(&todo)[0] {
+        Item::Notice { text, .. } => assert_eq!(text, "Plan:\n[x] one\n[ ] two"),
+        other => panic!("{other:?}"),
+    }
     let tc = json!({"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":7}});
     match &p.parse(&tc)[0] {
         Item::TurnEnd { usage, .. } => {

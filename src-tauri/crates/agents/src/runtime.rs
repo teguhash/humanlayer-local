@@ -246,13 +246,11 @@ impl Runtime {
         let (env, env_err) = tokio::task::spawn_blocking(move || env_fn())
             .await
             .map_err(|e| e.to_string())?;
-        let mut args = proto.args(cwd, resume);
         let (prepare, s, c) = (self.prepare.clone(), session.clone(), cwd.to_string());
-        args.extend(
-            tokio::task::spawn_blocking(move || prepare(&s, &c))
-                .await
-                .map_err(|e| e.to_string())??,
-        );
+        let extra = tokio::task::spawn_blocking(move || prepare(&s, &c))
+            .await
+            .map_err(|e| e.to_string())??;
+        let args = proto.args(cwd, resume, extra);
         let bin = shell_env::which(proto.binary(), &env).ok_or_else(|| {
             format!(
                 "`{}` not found on PATH. Install it, or check that your login shell puts it on PATH.{}",

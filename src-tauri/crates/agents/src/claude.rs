@@ -13,7 +13,7 @@ impl Agent for Claude {
         "claude"
     }
 
-    fn args(&self, _cwd: &str, resume: Option<&str>) -> Vec<String> {
+    fn args(&self, _cwd: &str, resume: Option<&str>, extra: Vec<String>) -> Vec<String> {
         let mut v: Vec<String> = [
             "-p",
             "--input-format",
@@ -35,6 +35,7 @@ impl Agent for Claude {
             v.push("--resume".into());
             v.push(id.into());
         }
+        v.extend(extra);
         v
     }
 

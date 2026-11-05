@@ -101,6 +101,28 @@ pub async fn update_task(
     Ok(t)
 }
 
+/// Pick the agent for the task's stage sessions (None = project default).
+#[tauri::command]
+pub async fn set_task_agent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    task_id: Id,
+    agent: Option<AgentKind>,
+) -> Res<Task> {
+    let t = state.db.set_task_agent(task_id, agent).map_err(err)?;
+    emit_task(&app, &t);
+    Ok(t)
+}
+
+#[tauri::command]
+pub async fn set_project_agent(
+    state: State<'_, AppState>,
+    project_id: Id,
+    agent: AgentKind,
+) -> Res<Project> {
+    state.db.set_project_agent(project_id, agent).map_err(err)
+}
+
 /// Move a task on the board (`index` 0 = top of the column). Entering a
 /// new stage starts that stage's skill session.
 #[tauri::command]
@@ -163,13 +185,13 @@ pub async fn iterate_artifact(
     let task = state.db.get_task(task_id).map_err(err)?;
     let kind = hl_core::artifacts::kind_of(&path);
     let skill = rpi::iterate_skill(kind).ok_or_else(|| format!("No iterate skill for {path}."))?;
-    let prompt = format!(
-        "/rpi:{skill} {}/{}/{path}\n\nFeedback:\n{}",
+    let args = format!(
+        "{}/{}/{path}\n\nFeedback:\n{}",
         hl_core::artifacts::LINK_DIR,
         task.slug,
         feedback.trim()
     );
-    rpi::start_skill_session(&app, task_id, skill, &prompt).await
+    rpi::start_skill_session(&app, task_id, skill, &args).await
 }
 
 /// Delete a task. Its worktree folder is removed first (the branch is

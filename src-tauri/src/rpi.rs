@@ -27,7 +27,11 @@ pub fn plugin_dir(app: &AppHandle) -> Option<PathBuf> {
         .find(|d| d.join(".claude-plugin/plugin.json").is_file())
 }
 
-/// Builds the extra CLI arguments for each session start: load the plugin,
+/// Where Codex finds the bundled skills: a link in the session folder
+/// (Codex reads project skills from `.agents/skills`, following links).
+pub const CODEX_SKILLS_LINK: &str = ".agents/skills/humanlayer-rpi";
+
+/// Builds the extra CLI arguments for each session start: load the skills,
 /// link the task's docs folder into the session folder, and say where it is.
 pub fn prepare_fn(
     db: Arc<Db>,
@@ -35,37 +39,73 @@ pub fn prepare_fn(
     plugin: Option<PathBuf>,
 ) -> Arc<hl_agents::PrepareFn> {
     Arc::new(move |session: &Session, cwd: &str| {
-        if session.agent_kind != AgentKind::Claude {
-            return Ok(vec![]); // Codex skills arrive in M5.
-        }
         let task = db.get_task(session.task_id).map_err(|e| e.to_string())?;
         let cwd = Path::new(cwd);
         let link = store.link_into(&task, cwd)?;
-        let rel = format!("{LINK_DIR}/{}", task.slug);
         let (env, _) = hl_core::shell_env::get();
-        if let Err(e) = hl_git::ensure_ignored(cwd, &rel, &format!("/{LINK_DIR}/"), &env) {
-            eprintln!("could not add git ignore rule in {}: {e}", cwd.display());
-        }
+        let ignore = |rel: &str| {
+            let top = rel.split('/').next().unwrap_or(rel);
+            // Ignore the whole docs folder, but only our link under .agents
+            // (a repo may commit its own skills there).
+            let pattern = if top == LINK_DIR {
+                format!("/{LINK_DIR}/")
+            } else {
+                format!("/{rel}")
+            };
+            if let Err(e) = hl_git::ensure_ignored(cwd, rel, &pattern, &env) {
+                eprintln!("could not add git ignore rule in {}: {e}", cwd.display());
+            }
+        };
+        ignore(&format!("{LINK_DIR}/{}", task.slug));
+        let docs_dir = store.dir(task.id).to_string_lossy().into_owned();
+        let prompt = system_prompt(&task, &link, session.agent_kind);
         let mut args = vec![];
-        if let Some(p) = &plugin {
-            let p = p.to_string_lossy().into_owned();
-            args.push("--plugin-dir".into());
-            args.push(p.clone());
-            // Skills read their own reference templates; don't prompt for that.
-            args.push("--add-dir".into());
-            args.push(p);
+        match session.agent_kind {
+            AgentKind::Claude => {
+                if let Some(p) = &plugin {
+                    let p = p.to_string_lossy().into_owned();
+                    args.push("--plugin-dir".into());
+                    args.push(p.clone());
+                    // Skills read their own reference templates; don't prompt for that.
+                    args.push("--add-dir".into());
+                    args.push(p);
+                }
+                // Writes go through the link into app data; allow that folder.
+                args.push("--add-dir".into());
+                args.push(docs_dir);
+                args.push("--append-system-prompt".into());
+                args.push(prompt);
+            }
+            AgentKind::Codex => {
+                if let Some(p) = &plugin {
+                    hl_core::artifacts::ensure_link(
+                        &p.join("skills"),
+                        &cwd.join(CODEX_SKILLS_LINK),
+                    )?;
+                    ignore(CODEX_SKILLS_LINK);
+                }
+                // The sandbox allows writes in the session folder only; the
+                // docs folder lives in app data, behind the link.
+                args.extend(hl_agents::codex::config_strings(
+                    "sandbox_workspace_write.writable_roots",
+                    &[docs_dir],
+                ));
+                args.extend(hl_agents::codex::config_string(
+                    "developer_instructions",
+                    &prompt,
+                ));
+            }
         }
-        // Writes go through the link into app data; allow that folder.
-        args.push("--add-dir".into());
-        args.push(store.dir(task.id).to_string_lossy().into_owned());
-        args.push("--append-system-prompt".into());
-        args.push(system_prompt(&task, &link));
         Ok(args)
     })
 }
 
-fn system_prompt(task: &Task, link: &Path) -> String {
+fn system_prompt(task: &Task, link: &Path, agent: AgentKind) -> String {
     let dir = link.display();
+    let (skill_word, list_tools) = match agent {
+        AgentKind::Claude => ("an rpi: skill", "not with List, Glob or Grep, and "),
+        AgentKind::Codex => ("a skill such as $create-plan", ""),
+    };
     format!(
         "<task_information>
 You are working on the task \"{title}\" (slug: {slug}) in HumanLayer Local.
@@ -74,10 +114,10 @@ You are working on the task \"{title}\" (slug: {slug}) in HumanLayer Local.
 <artifacts_directory_information>
 Your task artifacts directory is: {dir}
 
-If the user requests an rpi: skill and doesn't mention a file, check here first.
+If the user requests {skill_word} and doesn't mention a file, check here first.
 If the user asks you to continue work on a task, design discussion, plan or other task document and doesn't mention a file, check here first.
 
-This directory is a symlink. List it with `ls -La`, not with List, Glob or Grep, and not with `ls -la` (that shows the link target, which is irrelevant).
+This directory is a symlink. List it with `ls -La`, {list_tools}not with `ls -la` (that shows the link target, which is irrelevant).
 Read and write files in it as normal files, through the path above. Do not write to the link's target directly.
 The app lists the Markdown files in this directory on the task and renders them, so save task documents (research, plans, outlines) here.
 When writing Markdown documents, do not hard-wrap lines; the viewer wraps them.
@@ -87,33 +127,53 @@ When writing Markdown documents, do not hard-wrap lines; the viewer wraps them.
     )
 }
 
-/// The first message of a stage session.
-pub fn stage_prompt(task: &Task, skill: &str) -> String {
+/// How to invoke a bundled skill: a plugin slash command for Claude, a
+/// `$name` mention for Codex.
+pub fn skill_prompt(agent: AgentKind, skill: &str, args: &str) -> String {
+    let head = match agent {
+        AgentKind::Claude => format!("/rpi:{skill}"),
+        AgentKind::Codex => format!("${skill}"),
+    };
+    if args.is_empty() {
+        head
+    } else {
+        format!("{head} {args}")
+    }
+}
+
+/// The skill arguments of a stage session's first message.
+pub fn stage_args(task: &Task, skill: &str) -> String {
     if skill == "create-research" {
-        let mut p = format!("/rpi:create-research {}", task.title);
+        let mut p = task.title.clone();
         if !task.description.trim().is_empty() {
             p.push_str(&format!("\n\n{}", task.description.trim()));
         }
         p
     } else {
-        format!("/rpi:{skill}")
+        String::new()
     }
 }
 
-/// Create a Claude session for `skill` on the task and send `prompt`.
+/// Create a session for `skill` on the task, with the task's agent, and
+/// send the skill invocation with `args`.
 pub async fn start_skill_session(
     app: &AppHandle,
     task_id: Id,
     skill: &str,
-    prompt: &str,
+    args: &str,
 ) -> Result<Session, String> {
     let state = app.state::<AppState>();
+    let task = state.db.get_task(task_id).map_err(|e| e.to_string())?;
+    let agent = state.db.agent_for(&task).map_err(|e| e.to_string())?;
     let s = state
         .db
-        .create_session_with(task_id, AgentKind::Claude, Some(skill))
+        .create_session_with(task_id, agent, Some(skill))
         .map_err(|e| e.to_string())?;
     let _ = app.emit(SESSION_CREATED, &s);
-    state.rt.send(s.id, prompt).await?;
+    state
+        .rt
+        .send(s.id, &skill_prompt(agent, skill, args))
+        .await?;
     Ok(s)
 }
 
@@ -167,7 +227,7 @@ pub async fn on_stage_entered(app: &AppHandle, task: Task) -> Result<MoveResult,
             Err(e) => return Err(e),
         }
     }
-    let s = start_skill_session(app, task.id, skill, &stage_prompt(&task, skill)).await?;
+    let s = start_skill_session(app, task.id, skill, &stage_args(&task, skill)).await?;
     Ok(MoveResult {
         task,
         session: Some(s),
@@ -196,7 +256,7 @@ pub fn on_worktree_done(app: &AppHandle, task_id: Id, ok: bool) {
         }
         if let Some(skill) = stage::skill(&st)
             && let Err(e) =
-                start_skill_session(&app, task_id, skill, &stage_prompt(&task, skill)).await
+                start_skill_session(&app, task_id, skill, &stage_args(&task, skill)).await
         {
             eprintln!("task {task_id}: could not start {skill}: {e}");
         }
@@ -301,19 +361,26 @@ mod tests {
             worktree_status: None,
             worktree_log: None,
             archived_at: None,
+            agent: None,
         };
-        assert_eq!(
-            stage_prompt(&t, "create-research"),
-            "/rpi:create-research Add login"
-        );
+        let claude = |skill| skill_prompt(AgentKind::Claude, skill, &stage_args(&t, skill));
+        assert_eq!(claude("create-research"), "/rpi:create-research Add login");
+        assert_eq!(claude("create-plan"), "/rpi:create-plan");
         t.description = " via magic links ".into();
         assert_eq!(
-            stage_prompt(&t, "create-research"),
-            "/rpi:create-research Add login\n\nvia magic links"
+            skill_prompt(
+                AgentKind::Codex,
+                "create-research",
+                &stage_args(&t, "create-research")
+            ),
+            "$create-research Add login\n\nvia magic links"
         );
-        assert_eq!(stage_prompt(&t, "create-plan"), "/rpi:create-plan");
-        let sp = system_prompt(&t, Path::new("/r/.humanlayer/tasks/add-login"));
+        let link = Path::new("/r/.humanlayer/tasks/add-login");
+        let sp = system_prompt(&t, link, AgentKind::Claude);
         assert!(sp.contains("Your task artifacts directory is: /r/.humanlayer/tasks/add-login"));
+        assert!(sp.contains("an rpi: skill"));
+        let sp = system_prompt(&t, link, AgentKind::Codex);
+        assert!(sp.contains("$create-plan") && !sp.contains("Glob"));
         assert_eq!(iterate_skill("research"), Some("iterate-research"));
         assert_eq!(iterate_skill("task"), None);
     }

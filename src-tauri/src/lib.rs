@@ -93,6 +93,8 @@ pub fn run() {
             commands::delete_task,
             commands::update_task,
             commands::move_task,
+            commands::set_task_agent,
+            commands::set_project_agent,
             commands::start_stage_session,
             commands::list_artifacts,
             commands::read_artifact,

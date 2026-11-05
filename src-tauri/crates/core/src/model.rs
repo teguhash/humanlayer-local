@@ -8,6 +8,8 @@ pub struct Project {
     pub name: String,
     pub repo_path: String,
     pub created_at: String,
+    /// Agent for stage sessions when a task doesn't pick one.
+    pub default_agent: AgentKind,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -37,6 +39,8 @@ pub struct Task {
     /// Output of the last worktree creation and setup command.
     pub worktree_log: Option<String>,
     pub archived_at: Option<String>,
+    /// Overrides the project's `default_agent`. None = use the default.
+    pub agent: Option<AgentKind>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

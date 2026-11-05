@@ -19,6 +19,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_worktrees.sql"),
     include_str!("../migrations/0003_board.sql"),
+    include_str!("../migrations/0004_agents.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +147,36 @@ impl Db {
              WHERE id = ?1 RETURNING *",
             params![id, title, description.trim()],
         )
+    }
+
+    /// Override the project's default agent for this task (None = default).
+    pub fn set_task_agent(&self, id: Id, agent: Option<AgentKind>) -> Result<Task> {
+        self.update_task(
+            "UPDATE tasks SET agent = ?2,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 RETURNING *",
+            params![id, agent.map(AgentKind::as_str)],
+        )
+    }
+
+    pub fn set_project_agent(&self, id: Id, agent: AgentKind) -> Result<Project> {
+        self.with(|c| {
+            c.query_row(
+                "UPDATE projects SET default_agent = ?2 WHERE id = ?1 RETURNING *",
+                params![id, agent.as_str()],
+                project_row,
+            )
+            .optional()?
+            .ok_or(Error::NotFound("Project"))
+        })
+    }
+
+    /// The agent that runs the task's stage sessions.
+    pub fn agent_for(&self, task: &Task) -> Result<AgentKind> {
+        Ok(match task.agent {
+            Some(a) => a,
+            None => self.get_project(task.project_id)?.default_agent,
+        })
     }
 
     /// Put the task in `new_stage` at `index` (0 = top), renumbering that
@@ -554,6 +585,7 @@ fn project_row(r: &Row) -> rusqlite::Result<Project> {
         name: r.get("name")?,
         repo_path: r.get("repo_path")?,
         created_at: r.get("created_at")?,
+        default_agent: agent_col(r.get("default_agent")?)?,
     })
 }
 
@@ -577,6 +609,20 @@ fn task_row(r: &Row) -> rusqlite::Result<Task> {
         worktree_status: r.get("worktree_status")?,
         worktree_log: r.get("worktree_log")?,
         archived_at: r.get("archived_at")?,
+        agent: r
+            .get::<_, Option<String>>("agent")?
+            .map(agent_col)
+            .transpose()?,
+    })
+}
+
+fn agent_col(s: String) -> rusqlite::Result<AgentKind> {
+    AgentKind::parse(&s).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown agent {s}").into(),
+        )
     })
 }
 
@@ -636,6 +682,25 @@ mod tests {
         let b = Db::open(&path).unwrap();
         assert_eq!(b.list_projects().unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn task_agent_falls_back_to_project_default() {
+        let db = db();
+        let p = db.create_project("Demo", "/repo").unwrap();
+        assert_eq!(p.default_agent, AgentKind::Claude);
+        let t = db.create_task(p.id, "First").unwrap();
+        assert_eq!(
+            (t.agent, db.agent_for(&t).unwrap()),
+            (None, AgentKind::Claude)
+        );
+        db.set_project_agent(p.id, AgentKind::Codex).unwrap();
+        assert_eq!(db.agent_for(&t).unwrap(), AgentKind::Codex);
+        let t = db.set_task_agent(t.id, Some(AgentKind::Claude)).unwrap();
+        assert_eq!(db.agent_for(&t).unwrap(), AgentKind::Claude);
+        let t = db.set_task_agent(t.id, None).unwrap();
+        assert_eq!(db.agent_for(&t).unwrap(), AgentKind::Codex);
+        assert!(db.set_project_agent(999, AgentKind::Codex).is_err());
     }
 
     #[test]
