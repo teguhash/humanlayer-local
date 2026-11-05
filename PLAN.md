@@ -103,7 +103,7 @@ Answers the risky questions first.
 - [x] Cargo workspace with `core` crate; SQLite migrations for the data model above (crates are `hl-core`, `hl-agents`, `hl-git`: `core` clashes with Rust's built-in crate)
 - [x] Tauri commands: project, task and session CRUD (create, list, delete; edit comes with the board in M4)
 - [x] Sidebar: projects → tasks → sessions
-- [ ] Folder picker for a project's repo path; validate that it is a git repo — built and unit-tested; native picker not yet clicked through in the real window
+- [x] Folder picker for a project's repo path; validate that it is a git repo (native picker confirmed by hand)
 - [x] Copy shadcn components and Tailwind setup from upstream `packages/ui`
 
 ### M2: Claude adapter (weeks 4–6)
