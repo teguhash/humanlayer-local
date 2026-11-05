@@ -145,12 +145,12 @@ Note: worktrees are created on request ("Create worktree" on the task), not on t
 
 ### M6: Linear (weeks 12–13)
 
-- [ ] Settings: Linear API key, stored in the Keychain
-- [ ] Import a ticket by ID or URL as a task (title, description, images)
-- [ ] Poll linked tickets every 60 seconds while the app is open
-- [ ] Port the stage → status mapping; update the ticket when a task changes stage
-- [ ] Post links to research and plan docs on the ticket
-- [ ] Skills keep using the `linear` CLI with the same API key
+- [x] Settings: Linear API key, stored in the Keychain (checked with Linear before saving; docs/m6-findings.md)
+- [x] Import a ticket by ID or URL as a task (title, description, images) (ticket.md and images/ in the task's docs folder)
+- [x] Poll linked tickets every 60 seconds while the app is open (title/description follow the ticket unless edited here)
+- [x] Port the stage → status mapping; update the ticket when a task changes stage (forward only)
+- [x] Post links to research and plan docs on the ticket — docs are local, so a Post to Linear button posts the doc as a collapsible comment instead (reposting updates it)
+- [x] Skills keep using the `linear` CLI with the same API key (sessions get `LINEAR_API_KEY`; the bundled skills don't call it today)
 
 ### M7: GitHub (weeks 14–16)
 

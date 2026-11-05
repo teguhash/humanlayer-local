@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { MessageSquarePlus, RefreshCw } from "lucide-react";
+import { MessageSquarePlus, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/Markdown";
 import { api, ITERATE_SKILL, type Artifact, type Session } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+const IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i;
 
 const KIND_LABEL: Record<string, string> = {
   task: "task",
@@ -26,6 +28,8 @@ export function TaskDocs(props: {
   /** Changes when the backend says the folder changed. */
   refreshKey: unknown;
   onSessionStarted: (s: Session) => void;
+  /** Linear ticket identifier when the task is linked. */
+  linearId?: string | null;
 }) {
   const [files, setFiles] = useState<Artifact[] | null>(null);
   const [sel, setSel] = useState<string | null>(null);
@@ -33,6 +37,7 @@ export function TaskDocs(props: {
   const [err, setErr] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [posted, setPosted] = useState<string | null>(null);
 
   const load = useCallback(() => {
     api
@@ -50,9 +55,18 @@ export function TaskDocs(props: {
   useEffect(load, [load, props.refreshKey]);
 
   const current = files?.find((f) => f.path === sel);
+  const isImage = !!sel && IMAGE.test(sel);
   useEffect(() => {
     setText(null);
+    setPosted(null);
     if (!sel) return;
+    if (IMAGE.test(sel)) {
+      api
+        .readArtifactDataUrl(props.taskId, sel)
+        .then(setText)
+        .catch((e) => setText(`Could not read ${sel}: ${e}`));
+      return;
+    }
     api
       .readArtifact(props.taskId, sel)
       .then(setText)
@@ -64,6 +78,11 @@ export function TaskDocs(props: {
   if (!files) return <p className="text-muted-foreground">Loading docs…</p>;
 
   const iterSkill = current && ITERATE_SKILL[current.kind];
+  // Image links in a doc are relative to the doc's folder.
+  const resolveImage = (src: string) => {
+    const dir = sel && sel.includes("/") ? sel.slice(0, sel.lastIndexOf("/") + 1) : "";
+    return api.readArtifactDataUrl(props.taskId, dir + src.replace(/^\.\//, ""));
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -108,11 +127,34 @@ export function TaskDocs(props: {
                 <span className="truncate text-muted-foreground">
                   {current.path} · {new Date(Number(current.updated_at) * 1000).toLocaleString()}
                 </span>
-                {iterSkill && feedback === null && (
-                  <Button size="sm" variant="outline" onClick={() => setFeedback("")}>
-                    <MessageSquarePlus /> Iterate
-                  </Button>
-                )}
+                <span className="flex flex-none items-center gap-2">
+                  {posted && <span className="text-muted-foreground">{posted}</span>}
+                  {props.linearId && current.path.endsWith(".md") && current.path !== "ticket.md" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      title={`Post this doc to ${props.linearId} as a comment; posting again updates that comment`}
+                      onClick={() => {
+                        setBusy(true);
+                        setErr(null);
+                        setPosted(null);
+                        api
+                          .postDocToLinear(props.taskId, current.path)
+                          .then((r) => setPosted(`${r === "updated" ? "Updated" : "Posted"} on ${props.linearId}`))
+                          .catch((x) => setPosted(`Could not post: ${x}`))
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      <Send /> Post to Linear
+                    </Button>
+                  )}
+                  {iterSkill && feedback === null && (
+                    <Button size="sm" variant="outline" onClick={() => setFeedback("")}>
+                      <MessageSquarePlus /> Iterate
+                    </Button>
+                  )}
+                </span>
               </div>
             )}
             {current && feedback !== null && (
@@ -155,8 +197,14 @@ export function TaskDocs(props: {
             <div className="min-h-0 flex-1 overflow-auto p-4">
               {text === null ? (
                 <p className="text-muted-foreground">Loading…</p>
+              ) : isImage ? (
+                text.startsWith("data:") ? (
+                  <img src={text} alt={sel ?? ""} className="max-w-full" />
+                ) : (
+                  <p className="text-destructive">{text}</p>
+                )
               ) : sel?.endsWith(".md") ? (
-                <Markdown text={text} />
+                <Markdown text={text} resolveImage={resolveImage} />
               ) : (
                 <pre className="text-xs whitespace-pre-wrap">{text}</pre>
               )}

@@ -28,6 +28,7 @@ export type Task = {
   stage: Stage;
   position: number;
   worktree_path: string | null;
+  /** Linear ticket identifier (e.g. ENG-123) when linked. */
   linear_issue_id: string | null;
   github_issue: string | null;
   created_at: string;
@@ -38,6 +39,9 @@ export type Task = {
   worktree_status: WorktreeStatus | null;
   worktree_log: string | null;
   archived_at: string | null;
+  linear_url: string | null;
+  /** Workflow state name as last synced. */
+  linear_state: string | null;
   /** Overrides the project's default_agent; null = use the default. */
   agent: Agent | null;
 };
@@ -68,6 +72,15 @@ export const ITERATE_SKILL: Record<string, string> = {
   research_questions: "iterate-research-questions",
   design: "iterate-design-discussion",
 };
+
+export type LinearStatus = {
+  has_key: boolean;
+  account: string | null;
+  /** Seconds since the Unix epoch, as text. */
+  last_poll: string | null;
+  last_error: string | null;
+};
+export type Notice = { level: "info" | "error"; text: string };
 
 export type MoveResult = { task: Task; session: Session | null; note: string | null };
 
@@ -169,6 +182,17 @@ export const api = {
   readArtifact: (taskId: number, path: string) => invoke<string>("read_artifact", { taskId, path }),
   iterateArtifact: (taskId: number, path: string, feedback: string) =>
     invoke<Session>("iterate_artifact", { taskId, path, feedback }),
+  readArtifactDataUrl: (taskId: number, path: string) =>
+    invoke<string>("read_artifact_data_url", { taskId, path }),
+  postDocToLinear: (taskId: number, path: string) => invoke<string>("post_doc_to_linear", { taskId, path }),
+
+  linearStatus: () => invoke<LinearStatus>("linear_status"),
+  setLinearKey: (key: string) => invoke<LinearStatus>("set_linear_key", { key }),
+  clearLinearKey: () => invoke<void>("clear_linear_key"),
+  syncLinearNow: () => invoke<LinearStatus>("sync_linear_now"),
+  importLinearTicket: (projectId: number, reference: string) =>
+    invoke<{ task: Task; note: string | null }>("import_linear_ticket", { projectId, reference }),
+
   deleteTask: (id: number, force = false) => invoke<void>("delete_task", { id, force }),
 
   createWorktree: (taskId: number) => invoke<Task>("create_worktree", { taskId }),

@@ -11,7 +11,12 @@ import {
   ArchiveRestore,
   Pencil,
   Play,
+  Settings as SettingsIcon,
+  Download,
+  ExternalLink,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Settings } from "@/components/Settings";
 import {
   api,
   STAGE_SKILL,
@@ -19,6 +24,7 @@ import {
   skillCommand,
   type Agent,
   type MoveResult,
+  type Notice,
   type Project,
   type Session,
   type Stage,
@@ -41,6 +47,7 @@ type Selection =
   | { kind: "project"; id: number }
   | { kind: "task"; id: number }
   | { kind: "session"; id: number }
+  | { kind: "settings"; id: 0 }
   | null;
 
 export default function App() {
@@ -112,6 +119,16 @@ export default function App() {
     return () => {
       un1.then((f) => f());
       un2.then((f) => f());
+    };
+  }, []);
+
+  // Background messages (Linear status moves and failures).
+  useEffect(() => {
+    const un = listen<Notice>("notice", ({ payload: n }) =>
+      n.level === "error" ? setError(n.text) : setNotice({ text: n.text }),
+    );
+    return () => {
+      un.then((f) => f());
     };
   }, []);
 
@@ -200,7 +217,8 @@ export default function App() {
   function showMove(r: MoveResult) {
     if (r.session) {
       loadSessions(r.task.id);
-      setNotice({ text: `Started /rpi:${r.session.skill} on “${r.task.title}”.`, sessionId: r.session.id });
+      const cmd = r.session.skill ? skillCommand(r.session.agent_kind, r.session.skill) : "a session";
+      setNotice({ text: `Started ${cmd} on “${r.task.title}”.`, sessionId: r.session.id });
     } else if (r.note) {
       setNotice({ text: r.note });
     }
@@ -292,6 +310,15 @@ export default function App() {
             </div>
           ))}
         </nav>
+        <div className="border-t p-1">
+          <TreeRow
+            depth={0}
+            selected={sel?.kind === "settings"}
+            onSelect={() => setSel({ kind: "settings", id: 0 })}
+            icon={<SettingsIcon className="size-4" />}
+            label="Settings"
+          />
+        </div>
       </aside>
 
       {/* ---- main ---- */}
@@ -338,11 +365,20 @@ export default function App() {
           </div>
         )}
 
+        {sel?.kind === "settings" && <Settings />}
+
         {sel?.kind === "project" && project(sel.id) && (
           <ProjectView
             project={project(sel.id)!}
             tasks={tasks[sel.id] ?? []}
             onAddTask={(title) => addTask(sel.id, title)}
+            onImport={(ref) =>
+              api.importLinearTicket(sel.id, ref).then(async (r) => {
+                await loadTasks(sel.id);
+                if (r.note) setNotice({ text: r.note });
+                setSel({ kind: "task", id: r.task.id });
+              })
+            }
             onOpenTask={(id) => setSel({ kind: "task", id })}
             onMove={moveTask}
             onDelete={() => removeProject(project(sel.id)!)}
@@ -453,6 +489,7 @@ function ProjectView(props: {
   project: Project;
   tasks: Task[];
   onAddTask: (title: string) => Promise<void>;
+  onImport: (reference: string) => Promise<void>;
   onOpenTask: (id: number) => void;
   onMove: (t: Task, stage: Stage, index: number) => void;
   onDelete: () => Promise<void>;
@@ -462,6 +499,8 @@ function ProjectView(props: {
   const [title, setTitle] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [ticket, setTicket] = useState("");
+  const [importing, setImporting] = useState(false);
   const p = props.project;
   const active = props.tasks.filter((t) => !t.archived_at);
   const archived = props.tasks.filter((t) => t.archived_at);
@@ -506,13 +545,39 @@ function ProjectView(props: {
           <Plus /> Task
         </Button>
       </form>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setErr(null);
+          setImporting(true);
+          props
+            .onImport(ticket)
+            .then(() => setTicket(""))
+            .catch((e) => setErr(String(e)))
+            .finally(() => setImporting(false));
+        }}
+      >
+        <Input
+          placeholder="Linear ticket ID or URL (ENG-123)"
+          value={ticket}
+          onChange={(e) => setTicket(e.target.value)}
+        />
+        <Button type="submit" variant="outline" disabled={!ticket.trim() || importing}>
+          <Download /> {importing ? "Importing…" : "Import"}
+        </Button>
+      </form>
       {err && <p className="text-destructive">{err}</p>}
       <Board
         tasks={active}
         onMove={props.onMove}
         onOpen={props.onOpenTask}
         label={(t) =>
-          [t.agent && t.agent !== p.default_agent ? AGENT_LABEL[t.agent] : "", wtLabel(t)]
+          [
+            t.linear_issue_id ? `${t.linear_issue_id}${t.linear_state ? ` · ${t.linear_state}` : ""}` : "",
+            t.agent && t.agent !== p.default_agent ? AGENT_LABEL[t.agent] : "",
+            wtLabel(t),
+          ]
             .filter(Boolean)
             .join(" · ")
         }
@@ -576,6 +641,20 @@ function TaskView(props: {
         sub={
           <>
             {props.project?.name} · <Badge variant="outline">{t.stage}</Badge>
+            {t.linear_issue_id && (
+              <>
+                {" "}
+                ·{" "}
+                <button
+                  className="inline-flex cursor-pointer items-center gap-1 underline-offset-2 hover:underline"
+                  title="Open in Linear"
+                  onClick={() => t.linear_url && openUrl(t.linear_url).catch(props.onError)}
+                >
+                  {t.linear_issue_id} <ExternalLink className="size-3" />
+                </button>
+                {t.linear_state && <Badge variant="secondary">{t.linear_state}</Badge>}
+              </>
+            )}
             {t.archived_at && <> · archived {new Date(t.archived_at).toLocaleString()}</>}
           </>
         }
@@ -664,7 +743,13 @@ function TaskView(props: {
         ))}
       </div>
       {tab === "docs" ? (
-        <TaskDocs taskId={t.id} slug={t.slug} refreshKey={props.docsKey} onSessionStarted={props.onSessionStarted} />
+        <TaskDocs
+          taskId={t.id}
+          slug={t.slug}
+          refreshKey={props.docsKey}
+          onSessionStarted={props.onSessionStarted}
+          linearId={t.linear_issue_id}
+        />
       ) : tab === "changes" && hasWt ? (
         <DiffView taskId={t.id} refreshKey={sessionKey} />
       ) : (
