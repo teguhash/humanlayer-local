@@ -165,7 +165,7 @@ Note: worktrees are created on request ("Create worktree" on the task), not on t
 - [ ] Developer ID signing and notarization — deferred: no paid Apple Developer account yet. Releases are ad-hoc signed; README explains "Open Anyway". Adding it later is config and CI secrets only.
 - [x] Tauri updater with a static update feed (for example GitHub Releases) (`latest.json` on GitHub Releases, made by `scripts/release.sh`; docs/m8-findings.md)
 - [x] Log files and a "copy diagnostics" action (`~/Library/Logs/dev.teguh.humanlayerlocal/`; report scrubs keys, tokens, emails and the home path)
-- [x] First-run checks: `claude`, `codex`, `gh` and `git` found on PATH (banner at start; Settings → Tools)
+- [x] First-run checks: `claude`, `codex`, `gh` and `git` found on PATH (banner at start; Settings → Tools; release build confirmed by hand)
 
 ## Risks
 
