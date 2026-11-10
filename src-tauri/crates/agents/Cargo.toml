@@ -3,6 +3,7 @@ name = "hl-agents"
 version = "0.1.0"
 edition = "2024"
 description = "Claude and Codex CLI adapters"
+license = "Apache-2.0"
 
 [dependencies]
 hl-core = { path = "../core" }

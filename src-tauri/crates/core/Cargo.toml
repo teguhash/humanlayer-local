@@ -3,6 +3,7 @@ name = "hl-core"
 version = "0.1.0"
 edition = "2024"
 description = "Domain types, SQLite storage and migrations, shell environment"
+license = "Apache-2.0"
 
 [dependencies]
 rusqlite = { version = "0.41", features = ["bundled"] }

@@ -3,6 +3,7 @@ name = "hl-git"
 version = "0.1.0"
 edition = "2024"
 description = "git CLI helpers: repo validation, per-task worktrees, diffs"
+license = "Apache-2.0"
 
 [dependencies]
 hl-core = { path = "../core" }

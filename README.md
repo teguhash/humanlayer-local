@@ -166,4 +166,4 @@ cd src-tauri && cargo test --workspace
 
 Parts of this project are derived from [HumanLayer](https://github.com/humanlayer/humanlayer) under the Apache License 2.0: the RPI skills and agents, UI components, and several ported ideas. See [NOTICE](NOTICE) and [licenses/humanlayer-LICENSE](licenses/humanlayer-LICENSE). This project is not affiliated with HumanLayer.
 
-A license for this project's own code has not been chosen yet.
+HumanLayer Local is licensed under the [Apache License 2.0](LICENSE).
